@@ -1,0 +1,228 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2022-08-07 16:28+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: notes@redclaw.com.br/extension.js
+msgid "Show notes"
+msgstr ""
+
+#: notes@redclaw.com.br/extension.js
+msgid "Notes extension error: failed to load a note"
+msgstr ""
+
+#: notes@redclaw.com.br/extension.js notes@redclaw.com.br/prefs.ui
+msgid "Notes"
+msgstr ""
+
+#: notes@redclaw.com.br/extension.js
+msgid "Restart the extension to apply the changes"
+msgstr ""
+
+#: notes@redclaw.com.br/menus.js
+msgid "Custom color"
+msgstr ""
+
+#: notes@redclaw.com.br/menus.js notes@redclaw.com.br/prefs.ui
+msgid "Settings"
+msgstr ""
+
+#: notes@redclaw.com.br/menus.js notes@redclaw.com.br/noteBox.js
+#: notes@redclaw.com.br/prefs.ui
+msgid "Apply"
+msgstr ""
+
+#: notes@redclaw.com.br/menus.js
+msgid "Font size"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Type here…"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "New"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Delete"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Note options"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Resize"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Empty note"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Delete this note?"
+msgstr ""
+
+#: notes@redclaw.com.br/noteBox.js
+msgid "Edit title"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.js
+msgid "Modifications will be effective after reloading the extension."
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.js
+#, javascript-format
+msgid "Default value is %s"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.js
+#, javascript-format
+msgid "Version %s"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Position of notes"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Above everything"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "On the background"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Incompatible with desktop icons"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Cycle through 3 states"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Send to background, send to foreground, hide"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Automatic focus"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Use a keyboard shortcut"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Use a keyboard shortcut to toggle notes visibility"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Help"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Hide the icon"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "First note's color"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "The notes created afterwards will use the color of their parent"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid ""
+"Your notes are saved to the disk on various occasions (mainly when you hide "
+"them). If you want to <b>get a copy of your notes</b>, this button opens the "
+"folder where they are."
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Open the storage directory"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid ""
+"Files ending with \"_state\" contain the color and position of your notes"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Files ending with \"_text\" contain the text written in your notes"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Backup"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Explanations about how to use this extension can be found here:"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Online help manual"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid ""
+"Click on this button if you accidentally moved a note out of your primary "
+"monitor (example: if you had notes on a secondary monitor and unplugged it)."
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Bring back to the primary monitor"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Sticky notes for the GNOME Shell desktop."
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Author:"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Translation:"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "translator-credits"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Report bugs or ideas"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "About"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "List of valid key names"
+msgstr ""
+
+#. Context for translation: modifier keys are ctrl/shift/super/alt
+#: notes@redclaw.com.br/prefs.ui
+msgid "Modifier keys must be between chevrons"
+msgstr ""
+
+#: notes@redclaw.com.br/prefs.ui
+msgid "Don't use a keyboard shortcut that already exists."
+msgstr ""

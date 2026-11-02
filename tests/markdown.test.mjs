@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {renderMarkdown} from '../notes@maestroschan.fr/markdown.js';
+import {renderMarkdown} from '../notes@redclaw.com.br/markdown.js';
 
 test('renders basic Markdown without changing source text', () => {
     const source = '# A title\n- first\n**bold** and *italic*\n`code`';

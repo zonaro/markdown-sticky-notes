@@ -2,7 +2,7 @@
 # Install Notes for GNOME 50/51 for the current user, without sudo.
 set -euo pipefail
 
-UUID='notes@maestroschan.fr'
+UUID='notes@redclaw.com.br'
 REPO='https://github.com/zonaro/notes-extension-gnome'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
@@ -53,17 +53,23 @@ mkdir -p "$EXTENSIONS_DIR" "$BACKUPS_DIR"
 cp -a -- "$SOURCE_DIR" "$WORK_DIR/$UUID"
 glib-compile-schemas "$WORK_DIR/$UUID/schemas"
 
-if [[ -e "$DESTINATION" ]]; then
-    backup="$BACKUPS_DIR/${UUID}.$(date +%Y%m%d-%H%M%S)"
+backup_extension() {
+    local source="$1"
+    local identity="$2"
+    [[ -e "$source" ]] || return 0
+    local backup="$BACKUPS_DIR/${identity}.$(date +%Y%m%d-%H%M%S)"
     if [[ -e "$backup" ]]; then
         backup="$backup.$$"
     fi
-    mv -- "$DESTINATION" "$backup"
+    mv -- "$source" "$backup"
     echo "Previous extension backed up to: $backup"
-fi
+}
+
+backup_extension "$DESTINATION" "$UUID"
 
 mv -- "$WORK_DIR/$UUID" "$DESTINATION"
 echo "Installed to: $DESTINATION"
 echo 'Your notes will be stored in ~/notes/ as Markdown files.'
-echo 'Legacy notes are copied on first enable; the original files are preserved.'
+echo 'No previous notes or .state files are imported.'
 echo "Log out and log in again, then enable with: gnome-extensions enable '$UUID'"
+echo 'If notes@maestroschan.fr is still installed, disable it separately in the Extensions app.'
