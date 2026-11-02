@@ -40,8 +40,8 @@ function stringFromArray(data){
  * interact with the NotesManager singleton.
  */
 export class NoteBox {
-	constructor (id, color, fontSize) {
-		this.id = id;
+	constructor (filename, color, fontSize) {
+		this.filename = filename;
 		this._fontSize = fontSize;
 		if (color.split(',').length == 3) {
 			this.customColor = color;
@@ -52,6 +52,8 @@ export class NoteBox {
 			c[2] = c[2] * 255;
 			this.customColor = c.toString();
 		}
+		this._defaultColor = this.customColor;
+		this._defaultFontSize = fontSize;
 		this._buildNote();
 	}
 
@@ -95,6 +97,12 @@ export class NoteBox {
 		clutterText.set_activatable(false); // we can press Enter
 		clutterText.set_line_wrap(true);
 		clutterText.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR);
+		clutterText.connect('text-changed', () => {
+			if (!this._loadingFromDisk) {
+				this._dirty = true;
+				this._scheduleSave();
+			}
+		});
 
 		this._entryBox = new St.BoxLayout({
 			reactive: true,
@@ -135,10 +143,13 @@ export class NoteBox {
 		// 'Extension.NOTES_MANAGER' instead, which prevents inconsistencies.
 		this.loadIntoCorrectLayer();
 		this._setNotePosition();
+		this._loadingFromDisk = true;
 		this.noteEntry.set_text(this._noteBody);
+		this._loadingFromDisk = false;
 		// ShellEntry.addContextMenu(this.noteEntry); // FIXME doesn't work
 		this._initStyle();
-		this._saveDocument();
+		if (this._needsFrontmatter)
+			this._saveDocument();
 
 		this.grabX = this._x + 100;
 		this.grabY = this._y + 10;
@@ -332,7 +343,21 @@ export class NoteBox {
 	}
 
 	onlySave () {
+		if (this._saveTimeout) {
+			GLib.Source.remove(this._saveTimeout);
+			this._saveTimeout = null;
+		}
 		this._saveDocument();
+	}
+
+	_scheduleSave() {
+		if (this._saveTimeout)
+			GLib.Source.remove(this._saveTimeout);
+		this._saveTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 350, () => {
+			this._saveTimeout = null;
+			this.onlySave();
+			return GLib.SOURCE_REMOVE;
+		});
 	}
 
 	fixState () {
@@ -539,9 +564,9 @@ export class NoteBox {
 	}
 
 	_readDocument() {
-		const path = GLib.build_filenamev([PATH, `${this.id}.md`]);
+		const path = GLib.build_filenamev([PATH, this.filename]);
 		if (!GLib.file_test(path, GLib.FileTest.EXISTS))
-			return '';
+			return null;
 		const [success, contents] = Gio.File.new_for_path(path).load_contents(null);
 		if (!success)
 			throw new Error(`Could not read note: ${path}`);
@@ -549,6 +574,10 @@ export class NoteBox {
 	}
 
 	_saveDocument(previousDocument = null) {
+		// An external deletion is authoritative: never recreate a removed file.
+		const current = previousDocument ?? this._readDocument();
+		if (current === null)
+			return;
 		const metadata = {
 			x: this._x,
 			y: this._y,
@@ -558,15 +587,19 @@ export class NoteBox {
 			fontSize: this._fontSize,
 			bodyVisible: this.entry_is_visible,
 		};
-		const current = previousDocument ?? this._readDocument();
 		const document = writeNoteDocument(this.noteEntry.get_text() || '', metadata, current);
-		GLib.file_set_contents(GLib.build_filenamev([PATH, `${this.id}.md`]), document);
+		GLib.file_set_contents(GLib.build_filenamev([PATH, this.filename]), document);
+		this._lastDocument = document;
+		this._dirty = false;
 	}
 
-	reassignId(newId) {
+	reloadIfChanged() {
 		const document = this._readDocument();
-		this.id = newId;
-		this._saveDocument(document);
+		if (document === null || document === this._lastDocument || this._dirty)
+			return;
+		this._applyDocument(document);
+		if (this._needsFrontmatter)
+			this._saveDocument();
 	}
 
 	/*
@@ -590,27 +623,51 @@ export class NoteBox {
 	}
 
 	_loadDocument() {
-		const {body, metadata} = parseNoteDocument(this._readDocument());
-		const position = this._computeRandomPosition();
+		this._applyDocument(this._readDocument() ?? '');
+	}
+
+	_applyDocument(document) {
+		const {body, metadata, hasFrontmatter, malformedFrontmatter} = parseNoteDocument(document);
+		this._defaultPosition ??= this._computeRandomPosition();
+		const position = this._defaultPosition;
+		this._lastDocument = document;
+		this._needsFrontmatter = !hasFrontmatter && !malformedFrontmatter;
 		this._noteBody = body;
 		this._x = metadata.x ?? Math.floor(position[0]);
 		this._y = metadata.y ?? Math.floor(position[1]);
-		this.customColor = metadata.color ?? this.customColor;
+		this.customColor = metadata.color ?? this._defaultColor;
 		this.actor.width = Math.max(MIN_WIDTH, metadata.width ?? 250);
 		this.actor.height = Math.max(MIN_HEIGHT, metadata.height ?? 180);
-		this._fontSize = Math.max(2, metadata.fontSize ?? this._fontSize);
+		this._fontSize = Math.max(2, metadata.fontSize ?? this._defaultFontSize);
 		this.entry_is_visible = metadata.bodyVisible ?? true;
+		if (this.noteEntry) {
+			this._loadingFromDisk = true;
+			try {
+				this.noteEntry.set_text(body);
+				this._entryBox.visible = this.entry_is_visible;
+				this._applyColor(...this.customColor.split(','));
+				this._setNotePosition();
+				if (this._preview.visible)
+					this._preview.clutter_text.set_markup(renderMarkdown(body));
+			} finally {
+				this._loadingFromDisk = false;
+			}
+		}
 	}
 
 	//--------------------------------------------------------------------------
 
 	_deleteNoteObject () {
-		let noteId = this.id;
+		let filename = this.filename;
 		this.destroy();
-		Extension.NOTES_MANAGER.postDelete(noteId);
+		Extension.NOTES_MANAGER.postDelete(filename);
 	}
 
 	destroy () {
+		if (this._saveTimeout) {
+			GLib.Source.remove(this._saveTimeout);
+			this._saveTimeout = null;
+		}
 		this.actor.destroy();
 		this.actor = null;
 	}

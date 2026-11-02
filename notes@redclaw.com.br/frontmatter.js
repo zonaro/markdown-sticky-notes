@@ -15,13 +15,16 @@ const FIELD_NAMES = new Set(FIELDS.map(([, name]) => name));
 export function parseNoteDocument(document) {
     let body = document;
     let header = [];
-    const match = document.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    let hasFrontmatter = false;
+    const startsWithDelimiter = /^---(?:\r?\n|$)/.test(document);
+    const match = document.match(/^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/);
     if (match) {
-        const lines = match[1].split(/\r?\n/);
+        const lines = (match[1] ?? '').split(/\r?\n/);
         // Avoid mistaking normal Markdown horizontal rules for frontmatter.
-        if (lines.some(line => /^\s*[\w-]+\s*:/.test(line))) {
+        if (match[1] === undefined || lines.some(line => /^\s*[\w-]+\s*:/.test(line))) {
             header = lines;
             body = document.slice(match[0].length);
+            hasFrontmatter = true;
         }
     }
 
@@ -43,7 +46,10 @@ export function parseNoteDocument(document) {
                 metadata[property] = value;
         }
     }
-    return {body, metadata, header};
+    return {
+        body, metadata, header, hasFrontmatter,
+        malformedFrontmatter: startsWithDelimiter && !hasFrontmatter,
+    };
 }
 
 export function writeNoteDocument(body, metadata, previousDocument = '') {

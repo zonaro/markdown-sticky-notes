@@ -49,10 +49,27 @@ journalctl --user -b | grep -i 'notes@redclaw.com.br'
 
 ## Markdown and note storage
 
-Each note is a normal UTF-8 Markdown file in **`~/notes/`**:
+Each note is a normal UTF-8 Markdown file in **`~/notes/`**. The extension
+monitors this folder while GNOME Shell is running, and the filenames are stable:
 
-- `0.md`, `1.md`, etc.: Markdown body and YAML frontmatter for the note's position,
-  size, color, font size and visibility. **No `.state` files are created or read.**
+- Create `~/notes/ideas.md` (or `ideas.markdown`) in another editor: a new sticky
+  note appears automatically, without restarting GNOME Shell.
+- Edit the file outside the extension: the sticky note updates automatically.
+- Edit a sticky note in GNOME: the corresponding file is saved automatically
+  shortly after typing, or immediately when changing its appearance or position.
+- Delete a sticky note: its Markdown file is deleted. Delete a Markdown file in
+  `~/notes/`: the corresponding sticky note disappears. Renaming a file changes
+  the note's filename without renumbering other files.
+- Notes with no YAML frontmatter receive default layout and formatting metadata
+  **automatically**, written into the same file. If the frontmatter is malformed
+  or contains invalid values, defaults are used instead. Malformed source text
+  is preserved and is only rewritten when the note is next saved.
+
+All note layout metadata (position, size, color, font size and visibility) lives
+in the Markdown frontmatter. **No `.state` files are created or read.**
+Only regular `.md` and `.markdown` files directly inside `~/notes/` are watched;
+subdirectories and other file types are ignored. When the same note is edited in
+two applications simultaneously, the last save wins.
 
 Example:
 

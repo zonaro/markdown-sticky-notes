@@ -32,6 +32,7 @@ export default class NotesExtension extends Extension {
 		SETTINGS = this.getSettings();
 		AUTO_FOCUS = SETTINGS.get_boolean('auto-focus');
 		NOTES_MANAGER = new NotesManager(this);
+		NOTES_MANAGER.start();
 	}
 
 	disable() {
@@ -70,17 +71,90 @@ class NotesManager {
 		// `0` is the position within the chosen box (here, the `right` one)
 		Main.panel.addToStatusArea('NotesButton', this.panel_button, 0, 'right');
 
-		// Initialisation of the notes themselves
-		this._allNotes = new Array();
+		// Files are the source of truth; keep a stable actor per filename.
+		this._allNotes = [];
+		this._notesByFilename = new Map();
 		this._notesAreVisible = false;
 		this._updateLayerSetting(); // it inits LAYER_SETTING
-
-		this._notesLoaded = false; // this will tell the toggleState method that
-		// notes need to be loaded first, thus doing the actual initialisation
 
 		// Initialisation of the signals connections
 		this._bindKeyboardShortcut();
 		this._connectAllSignals();
+	}
+
+	start() {
+		const directory = Gio.File.new_for_path(PATH);
+		this._fileMonitor = directory.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+		this._fileMonitor.connect('changed', (_monitor, file, otherFile) => {
+			if (this._isNoteFile(file?.get_basename()) ||
+			    this._isNoteFile(otherFile?.get_basename()))
+				this._scheduleFileSync();
+		});
+		this._syncFiles();
+		this._showNotes();
+	}
+
+	_isNoteFile(name) {
+		return typeof name === 'string' && /\.(md|markdown)$/i.test(name);
+	}
+
+	_listNoteFiles() {
+		const names = [];
+		const iterator = Gio.File.new_for_path(PATH).enumerate_children(
+			'standard::name,standard::type', Gio.FileQueryInfoFlags.NONE, null);
+		try {
+			let info;
+			while ((info = iterator.next_file(null)) !== null) {
+				if (info.get_file_type() === Gio.FileType.REGULAR &&
+				    this._isNoteFile(info.get_name()))
+					names.push(info.get_name());
+			}
+		} finally {
+			iterator.close(null);
+		}
+		return names.sort((a, b) => a.localeCompare(b));
+	}
+
+	_scheduleFileSync() {
+		if (this._syncTimeout)
+			GLib.Source.remove(this._syncTimeout);
+		this._syncTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 180, () => {
+			this._syncTimeout = null;
+			this._syncFiles();
+			return GLib.SOURCE_REMOVE;
+		});
+	}
+
+	_syncFiles() {
+		let files;
+		try {
+			files = this._listNoteFiles();
+		} catch (error) {
+			console.error(`Could not scan ~/notes: ${error}`);
+			return;
+		}
+		const present = new Set(files);
+		for (const [name, note] of this._notesByFilename) {
+			if (!present.has(name)) {
+				this._notesByFilename.delete(name);
+				const index = this._allNotes.indexOf(note);
+				if (index !== -1)
+					this._allNotes.splice(index, 1);
+				note.destroy(); // File was removed outside GNOME; do not recreate it.
+			}
+		}
+		for (const name of files) {
+			const note = this._notesByFilename.get(name);
+			if (note) {
+				try {
+					note.reloadIfChanged();
+				} catch (error) {
+					console.error(`Could not reload ${name}: ${error}`);
+				}
+			} else {
+				this.createNote('', 16, name);
+			}
+		}
 	}
 
 	_bindKeyboardShortcut () {
@@ -96,47 +170,43 @@ class NotesManager {
 		}
 	}
 
-	_loadAllNotes () {
-		let i = 0;
-		let ended = false;
-		while(!ended) {
-			let textFile = GLib.build_filenamev([PATH, `${i}.md`]);
-			if (GLib.file_test(textFile, GLib.FileTest.EXISTS)) {
-				this.createNote('', 16);
-			} else {
-				ended = true;
-			}
-			i++;
-		}
-		this._onlyHideNotes();
-		this._notesLoaded = true;
-	}
-
 	//--------------------------------------------------------------------------
 	// "Public" methods, accessed by the NoteBox objects -----------------------
 
-	createNote (colorString, fontSize) {
-		let nextId = this._allNotes.length;
+	createNote (colorString, fontSize, filename = null) {
+		const isNew = filename === null;
+		if (isNew) {
+			const stamp = Date.now();
+			let counter = 0;
+			do {
+				filename = `note-${stamp}${counter ? `-${counter}` : ''}.md`;
+				counter++;
+			} while (GLib.file_test(GLib.build_filenamev([PATH, filename]), GLib.FileTest.EXISTS));
+			GLib.file_set_contents(GLib.build_filenamev([PATH, filename]), '');
+		}
 		try {
-			this._allNotes.push(new NoteBox(nextId, colorString, fontSize));
+			const note = new NoteBox(filename, colorString, fontSize);
+			this._allNotes.push(note);
+			this._notesByFilename.set(filename, note);
+			if (this._notesAreVisible)
+				note.show();
+			else
+				note.onlyHide();
 		} catch (e) {
 			Main.notify(_("Notes extension error: failed to load a note"));
-			console.error(`Failed to create note ${nextId}: ${e}`);
+			console.error(`Failed to create note ${filename}: ${e}`);
 		}
 	}
 
-	/*
-	 * When a NoteBox object deletes itself, it calls this method to ensure the
-	 * files go from 0 to (this._allNotes.length - 1) without any "gap" in the
-	 * numerotation.
-	 */
-	postDelete (deletedNoteId) {
-		let lastNote = this._allNotes.pop();
-		if (deletedNoteId < this._allNotes.length) {
-			this._allNotes[deletedNoteId] = lastNote;
-			lastNote.reassignId(deletedNoteId);
+	postDelete (filename) {
+		const note = this._notesByFilename.get(filename);
+		if (note) {
+			this._notesByFilename.delete(filename);
+			const index = this._allNotes.indexOf(note);
+			if (index !== -1)
+				this._allNotes.splice(index, 1);
 		}
-		this._deleteNoteFiles(this._allNotes.length);
+		this._deleteNoteFile(filename);
 	}
 
 	/*
@@ -188,18 +258,13 @@ class NotesManager {
 		this._notesAreVisible = false;
 	}
 
-	_deleteNoteFiles (id) {
-		for (const name of [`${id}.md`]) {
-			const file = Gio.File.new_for_path(GLib.build_filenamev([PATH, name]));
-			if (file.query_exists(null))
-				file.delete(null);
-		}
+	_deleteNoteFile (filename) {
+		const file = Gio.File.new_for_path(GLib.build_filenamev([PATH, filename]));
+		if (file.query_exists(null))
+			file.delete(null);
 	}
 
 	_onButtonPressed () {
-		if(!this._notesLoaded) {
-			this._loadAllNotes();
-		}
 		// log('_onButtonPressed');
 
 		let preventReshowing = false;
@@ -324,6 +389,12 @@ class NotesManager {
 	//--------------------------------------------------------------------------
 
 	destroy() {
+		this._fileMonitor?.cancel();
+		this._fileMonitor = null;
+		if (this._syncTimeout) {
+			GLib.Source.remove(this._syncTimeout);
+			this._syncTimeout = null;
+		}
 		SETTINGS.disconnect(this._settingsSignals['layout']);
 		SETTINGS.disconnect(this._settingsSignals['bring-back']);
 		SETTINGS.disconnect(this._settingsSignals['hide-icon']);
@@ -332,7 +403,7 @@ class NotesManager {
 		SETTINGS.disconnect(this._settingsSignals['auto-focus']);
 
 		this._allNotes.forEach(function (n) {
-				n.onlySave();
+			n.onlySave();
 			n.destroy();
 		});
 
