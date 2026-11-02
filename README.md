@@ -1,86 +1,96 @@
-# Sticky notes extension
+# Notes — GNOME Shell extension
 
-A GNOME Shell extension providing customizable sticky notes.
+Sticky notes for GNOME Shell with editable Markdown files and a built-in preview.
 
-![](./notes@maestroschan.fr/screenshots/about_picture.png)
+![Notes screenshot](notes@maestroschan.fr/screenshots/about_picture.png)
 
-### Compatible versions
+This fork targets **GNOME Shell 50 and 51**. It uses modern GNOME Shell ECMAScript
+modules and GTK4/libadwaita preferences. GNOME 44 and older are **not** supported
+by this branch; the older release is available in the Git history.
 
-Version 22 has been released the 20/11/2021
+## Install / update
 
-| GNOME Shell version | Extension version 23 | 22  | 20  | 19  | 18  |
-|---------------------|----------------------|-----|-----|-----|-----|
-| **42**              | Yes                  | No  |     |     |     |
-| **41**              | Yes                  | No  |     |     |     |
-| **40**              | ??                   | No  |     |     |     |
-| **3.38**            |                      | Yes | Yes | Yes |     |
-| **3.36**            |                      | Yes | Yes | Yes | Yes |
-| **3.34**            |                      |     |     | ??  | Yes |
-| **3.32**            |                      |     |     | ??  | Yes |
-| **3.30**            |                      |     |     | ??  | Yes |
+Requires GNOME Shell 50 or 51, `glib-compile-schemas` and either `curl` or `git`.
+Fedora usually ships the required GLib tooling already.
 
-### Available languages
+Run the installer directly from a checkout:
 
-
-| code  | Language name |
-|-------|---------------|
-|       | English       |
-| es    | Castillan     |
-| fr    | French        |
-| hr    | Croatian      |
-| nl    | Dutch         |
-| pt_BR | Brazilian Portuguese |
-| tr    | Turkish       |
-| zh_TW | Chinese (traditional)
-
-----
-
-## Installation
-
-### Recommended
-
-It's recommended to install the extension from
-[this website](https://extensions.gnome.org/extension/1357/notes/), or from
-the _GNOME Software_ app if it still can.
-
-[<img alt="" height="100" src="https://raw.githubusercontent.com/andyholmes/gnome-shell-extensions-badge/master/get-it-on-ego.svg?sanitize=true">](https://extensions.gnome.org/extension/1357/notes/)
-
-### Not recommended
-
-**Installing unstable code from github means you can have bugs, and you will not
-get updates for the extensions**
-
-To install an unstable version, download the files, run `./install.sh`, restart
-the session, and enable the extension.
-
-----
-
-## Storage
-
-Data are stored on your disk: files are in `~/.local/share/notes@maestroschan.fr`
-
-<!-- TODO
-
-si pas de motion ni de release après 1000ms, bouger la note de force (et si
-besoin relâcher le bouton) ⇒ attention justperfection2 m'a donné de quoi ne plus
-faire de la merde en termes de move au moins. (j'y crois moyen mais heh)
-https://old.reddit.com/r/gnome/comments/h08ysq/sticky_notes_extension_now_compatible_with_gnome/fuzz33o/
-https://gitlab.gnome.org/justperfection.channel/gnome-shell-extension-samples/-/blob/master/samples/move-container@example.com/extension.js
-https://www.youtube.com/watch?v=2qVn6CjlDUQ
-
-(à revérifier) pas de raise correct quand on focus une note sans focus automatique
-
-"éditer le titre" dans le menu :
-le bouton de grab aurait le titre en label, et clic-droit enroulerait
-
-
-    -->
-
-<!-- useful commands to develop:
-
+```bash
+git clone https://github.com/zonaro/notes-extension-gnome.git
+cd notes-extension-gnome
+./install.sh
 ```
-gjs /usr/share/gnome-shell/org.gnome.Shell.Extensions
+
+Or download the installer first and ask it to fetch the latest source from the
+repository (review the script before running it):
+
+```bash
+curl -fLsS https://raw.githubusercontent.com/zonaro/notes-extension-gnome/master/install.sh -o install-notes.sh
+bash install-notes.sh --github
+```
+
+The installer targets the current user (no `sudo`), compiles GSettings schemas,
+and backs up any previous extension installation under
+`~/.local/share/gnome-notes-extension-backups/`.
+
+**Log out and log back in** to load the new extension under Wayland. Then run:
+
+```bash
+gnome-extensions enable notes@maestroschan.fr
 gnome-extensions prefs notes@maestroschan.fr
 ```
-    -->
 
+If enabling fails, check the GNOME Shell logs:
+
+```bash
+journalctl --user -b | grep -i 'notes@maestroschan.fr'
+```
+
+## Markdown and note storage
+
+Each note is saved as a normal UTF-8 Markdown file in **`~/notes/`**:
+
+- `0.md`, `1.md`, etc.: note content in Markdown.
+- `.0.state`, `.1.state`, etc.: position, color, dimensions, and font size.
+- `.gnome-notes-migrated`: one-time migration record (if old notes existed).
+
+Edit notes normally, or click the preview button (page icon) on a note to switch
+between raw Markdown and a formatted preview. The preview supports headings,
+paragraphs, lists, blockquotes, horizontal rules, code blocks, inline code,
+**bold**, *italic*, ~~strikethrough~~ and visible link text. Links in the
+preview are display-only, not clickable. Markdown files themselves remain
+plain text and can be edited with your favorite editor.
+
+When this version is first enabled, notes from
+`~/.local/share/notes@maestroschan.fr` are **copied**, including their saved
+positions and formatting metadata, into `~/notes/`. Existing `~/notes/` files
+are not overwritten, and the original note data is never deleted by migration.
+Back up `~/notes/` periodically if you keep important information there.
+
+## Other features
+
+- Toggle notes from the top panel or a configurable keyboard shortcut.
+- Create/delete notes, resize and move notes, adjust colors and font size.
+- Choose foreground, background, or a three-state cycle.
+- GTK4/libadwaita preferences, including a button to open `~/notes/`.
+- Languages shipped: English, Spanish, French, Croatian, Dutch, Brazilian
+  Portuguese, Turkish, and Chinese (new strings may initially appear in English).
+
+## Build a ZIP
+
+```bash
+./build-a-zip.sh
+```
+
+The ZIP is rebuilt from the current source; the previously tracked ZIP in older
+commits should not be used for GNOME 50/51.
+
+## Validation
+
+Syntax and packaging can be checked without a running Shell; full integration
+must be checked on GNOME 50 and GNOME 51, including note rendering, focus,
+background mode, keyboard shortcut, and migration.
+
+## License and upstream
+
+GPL-3.0. Original extension by [Romain F. T.](https://github.com/maoschanz/notes-extension-gnome).

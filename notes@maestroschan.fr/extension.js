@@ -2,59 +2,80 @@
 // GPL v3
 // Copyright 2018-2021 Romain F. T.
 
-const { St, Shell, GLib, Gio, Meta } = imports.gi;
-const PanelMenu = imports.ui.panelMenu;
-const Panel = imports.ui.panel;
-const Main = imports.ui.main;
-const Mainloop = imports.mainloop;
-
-const ExtensionUtils = imports.misc.extensionUtils;
-const Me = ExtensionUtils.getCurrentExtension();
-
-const NoteBox = Me.imports.noteBox;
-
-const Gettext = imports.gettext.domain('notes-extension');
-const _ = Gettext.gettext;
+import St from 'gi://St';
+import Shell from 'gi://Shell';
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
+import Meta from 'gi://Meta';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {NoteBox} from './noteBox.js';
 
 //------------------------------------------------------------------------------
 
-const PATH = GLib.build_pathv('/', [GLib.get_user_data_dir(), 'notes@maestroschan.fr']);
-// which is usually ~/.local/share/notes@maestroschan.fr
+const PATH = GLib.build_filenamev([GLib.get_home_dir(), 'notes']);
+const LEGACY_PATH = GLib.build_filenamev([GLib.get_user_data_dir(), 'notes@maestroschan.fr']);
 
-var NOTES_MANAGER;
-var SETTINGS;
-var LAYER_SETTING;
-var AUTO_FOCUS;
+// Copies the old numbered files once without changing or deleting the originals.
+// If ~/notes already contains notes, imported notes receive unused new numbers.
+function migrateLegacyNotes() {
+	const marker = GLib.build_filenamev([PATH, '.gnome-notes-migrated']);
+	if (GLib.file_test(marker, GLib.FileTest.EXISTS) ||
+	    !GLib.file_test(LEGACY_PATH, GLib.FileTest.IS_DIR))
+		return;
 
-function init() {
-	ExtensionUtils.initTranslations();
-	try {
-		let a = Gio.file_new_for_path(PATH);
-		if (!a.query_exists(null)) {
-			a.make_directory(null);
+	let nextId = 0;
+	while (GLib.file_test(GLib.build_filenamev([PATH, `${nextId}.md`]), GLib.FileTest.EXISTS) ||
+	       GLib.file_test(GLib.build_filenamev([PATH, `.${nextId}.state`]), GLib.FileTest.EXISTS))
+		nextId++;
+
+	let imported = 0;
+	for (let id = 0; ; id++) {
+		const textSource = GLib.build_filenamev([LEGACY_PATH, `${id}_text`]);
+		const stateSource = GLib.build_filenamev([LEGACY_PATH, `${id}_state`]);
+		const hasText = GLib.file_test(textSource, GLib.FileTest.EXISTS);
+		const hasState = GLib.file_test(stateSource, GLib.FileTest.EXISTS);
+		if (!hasText && !hasState)
+			break;
+
+		const copy = (source, destination) => Gio.File.new_for_path(source).copy(
+			Gio.File.new_for_path(destination), Gio.FileCopyFlags.NONE, null, null);
+		if (hasText)
+			copy(textSource, GLib.build_filenamev([PATH, `${nextId}.md`]));
+		if (hasState)
+			copy(stateSource, GLib.build_filenamev([PATH, `.${nextId}.state`]));
+		nextId++;
+		imported++;
+	}
+	GLib.file_set_contents(marker, `Imported ${imported} notes from ${LEGACY_PATH}\n`);
+}
+
+export let NOTES_MANAGER = null;
+export let SETTINGS = null;
+export let AUTO_FOCUS = false;
+let LAYER_SETTING = '';
+
+export default class NotesExtension extends Extension {
+	enable() {
+		try {
+			Gio.File.new_for_path(PATH).make_directory_with_parents(null);
+		} catch (error) {
+			if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))
+				throw error;
 		}
-	} catch (e) {
-		log(e.message);
+		migrateLegacyNotes();
+
+		SETTINGS = this.getSettings();
+		AUTO_FOCUS = SETTINGS.get_boolean('auto-focus');
+		NOTES_MANAGER = new NotesManager(this);
 	}
-	LAYER_SETTING = '';
-}
 
-function enable() {
-	SETTINGS = ExtensionUtils.getSettings();
-	AUTO_FOCUS = SETTINGS.get_boolean('auto-focus'); // XXX crado
-
-	NOTES_MANAGER = new NotesManager();
-}
-
-function disable() {
-	NOTES_MANAGER.destroy();
-
-	if (NOTES_MANAGER) {
+	disable() {
+		NOTES_MANAGER?.destroy();
 		NOTES_MANAGER = null;
-	}
-
-	if (SETTINGS) {
 		SETTINGS = null;
+		AUTO_FOCUS = false;
 	}
 }
 
@@ -69,7 +90,8 @@ function disable() {
  * new one.
  */
 class NotesManager {
-	constructor() {
+	constructor(extension) {
+		this.extension = extension;
 		// Initialisation of the button in the top panel
 		this.panel_button = new PanelMenu.Button(0.0, _("Show notes"), false);
 		let icon = new St.Icon({
@@ -77,10 +99,10 @@ class NotesManager {
 			style_class: 'system-status-icon'
 		});
 		this.panel_button.add_child(icon);
-		this.panel_button.connect(
-			'button-press-event',
-			this._onButtonPressed.bind(this)
-		);
+		this.panel_button.connect('button-press-event', () => {
+			this._onButtonPressed();
+			return true;
+		});
 		this._updateIconVisibility();
 		// `0` is the position within the chosen box (here, the `right` one)
 		Main.panel.addToStatusArea('NotesButton', this.panel_button, 0, 'right');
@@ -115,8 +137,10 @@ class NotesManager {
 		let i = 0;
 		let ended = false;
 		while(!ended) {
-			let file2 = GLib.build_filenamev([PATH, i.toString() + '_state']);
-			if (GLib.file_test(file2, GLib.FileTest.EXISTS)) {
+			let textFile = GLib.build_filenamev([PATH, `${i}.md`]);
+			let stateFile = GLib.build_filenamev([PATH, `.${i}.state`]);
+			if (GLib.file_test(textFile, GLib.FileTest.EXISTS) ||
+			    GLib.file_test(stateFile, GLib.FileTest.EXISTS)) {
 				this.createNote('', 16);
 			} else {
 				ended = true;
@@ -133,11 +157,10 @@ class NotesManager {
 	createNote (colorString, fontSize) {
 		let nextId = this._allNotes.length;
 		try {
-			this._allNotes.push(new NoteBox.NoteBox(nextId, colorString, fontSize));
+			this._allNotes.push(new NoteBox(nextId, colorString, fontSize));
 		} catch (e) {
 			Main.notify(_("Notes extension error: failed to load a note"));
-			log('failed to create note n°' + nextId.toString());
-			log(e);
+			console.error(`Failed to create note ${nextId}: ${e}`);
 		}
 	}
 
@@ -187,7 +210,7 @@ class NotesManager {
 
 	_hideNotes () {
 		this._onlyHideNotes();
-		this._timeout_id = Mainloop.timeout_add(10, () => {
+		this._timeout_id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
 			this._timeout_id = null;
 			// saving to the disk is slightly delayed to give the illusion that
 			// the extension doesn't freeze the system
@@ -206,11 +229,11 @@ class NotesManager {
 	}
 
 	_deleteNoteFiles (id) {
-		let filePathBeginning = PATH + '/' + id.toString();
-		let textfile = Gio.file_new_for_path(filePathBeginning + '_text');
-		let statefile = Gio.file_new_for_path(filePathBeginning + '_state');
-		textfile.delete(null); // may not do anything
-		statefile.delete(null); // may not do anything
+		for (const name of [`${id}.md`, `.${id}.state`]) {
+			const file = Gio.File.new_for_path(GLib.build_filenamev([PATH, name]));
+			if (file.query_exists(null))
+				file.delete(null);
+		}
 	}
 
 	_onButtonPressed () {
@@ -360,7 +383,7 @@ class NotesManager {
 		this.panel_button.destroy();
 
 		if (this._timeout_id) {
-			Mainloop.source_remove(this._timeout_id);
+			GLib.Source.remove(this._timeout_id);
 			this._timeout_id = null;
 		}
 	}

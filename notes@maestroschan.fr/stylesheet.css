@@ -15,6 +15,11 @@
 	box-shadow: none;
 }
 
+.notesMarkdownPreview {
+	padding: 10px;
+	color: inherit;
+}
+
 .notesBackground {
 	background-gradient-start: rgba(0, 0, 0, 0.3);
 	background-gradient-end: rgba(0, 0, 0, 0.9);

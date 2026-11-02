@@ -1,24 +1,21 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-EXT_ID=notes@maestroschan.fr
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+UUID='notes@maestroschan.fr'
 
-./update-and-compile-translations.sh --all
+if ! command -v zip >/dev/null 2>&1 || ! command -v glib-compile-schemas >/dev/null 2>&1; then
+    echo 'zip and glib-compile-schemas are required.' >&2
+    exit 1
+fi
 
-cd $EXT_ID
+glib-compile-schemas "$ROOT/$UUID/schemas"
 
-glib-compile-schemas ./schemas
-
-zip ../$EXT_ID.zip *.ui
-zip ../$EXT_ID.zip *.js
-zip ../$EXT_ID.zip *.json
-zip ../$EXT_ID.zip *.css
-
-zip -r ../$EXT_ID.zip schemas
-zip -r ../$EXT_ID.zip locale
-zip -r ../$EXT_ID.zip screenshots
-
-shopt -s globstar
-
-zip -d ../$EXT_ID.zip **/*.pot
-zip -d ../$EXT_ID.zip **/*.po
-
+(
+    cd "$ROOT/$UUID"
+    zip -q -r -FS "$ROOT/$UUID.zip" \
+        extension.js noteBox.js menus.js dialog.js markdown.js prefs.js \
+        stylesheet.css metadata.json schemas locale screenshots \
+        -x '*.po' '*.pot'
+)
+echo "Created: $ROOT/$UUID.zip"

@@ -2,23 +2,20 @@
 // GPL v3
 // Copyright 2018-2021 Romain F. T.
 
-const { Clutter, St, GLib, Gio } = imports.gi;
-const Main = imports.ui.main;
-const ShellEntry = imports.ui.shellEntry;
-const GrabHelper = imports.ui.grabHelper;
+import Clutter from 'gi://Clutter';
+import St from 'gi://St';
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
+import Pango from 'gi://Pango';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Menus from './menus.js';
+import * as Extension from './extension.js';
+import * as Dialog from './dialog.js';
+import {renderMarkdown} from './markdown.js';
+import {gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const ExtensionUtils = imports.misc.extensionUtils;
-const Me = ExtensionUtils.getCurrentExtension();
-
-const Menus = Me.imports.menus;
-const Extension = Me.imports.extension;
-const Dialog = Me.imports.dialog;
-
-const Gettext = imports.gettext.domain('notes-extension');
-const _ = Gettext.gettext;
-
-// ~/.local/share/notes@maestroschan.fr
-const PATH = GLib.build_pathv('/', [GLib.get_user_data_dir(), 'notes@maestroschan.fr']);
+// Markdown notes and their layout metadata are stored under ~/notes/.
+const PATH = GLib.build_filenamev([GLib.get_home_dir(), 'notes']);
 
 const MIN_HEIGHT = 75;
 const MIN_WIDTH = 200;
@@ -27,7 +24,7 @@ const MIN_WIDTH = 200;
 
 function stringFromArray(data){
 	if (data instanceof Uint8Array) {
-		return imports.byteArray.toString(data);
+		return new TextDecoder().decode(data);
 	} else {
 		return data.toString();
 	}
@@ -41,7 +38,7 @@ function stringFromArray(data){
  * other methods are here for managing note state through buttons, or to
  * interact with the NotesManager singleton.
  */
-var NoteBox = class NoteBox {
+export class NoteBox {
 	constructor (id, color, fontSize) {
 		this.id = id;
 		this._fontSize = fontSize;
@@ -60,7 +57,7 @@ var NoteBox = class NoteBox {
 	_buildNote () {
 		this.actor = new St.BoxLayout({
 			reactive: true,
-			vertical: true,
+			orientation: Clutter.Orientation.VERTICAL,
 			min_height: MIN_HEIGHT,
 			min_width: MIN_WIDTH,
 			style_class: 'noteBoxStyle',
@@ -96,7 +93,7 @@ var NoteBox = class NoteBox {
 		clutterText.set_single_line_mode(false);
 		clutterText.set_activatable(false); // we can press Enter
 		clutterText.set_line_wrap(true);
-		clutterText.set_line_wrap_mode(imports.gi.Pango.WrapMode.WORD_CHAR);
+		clutterText.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR);
 
 		this._entryBox = new St.BoxLayout({
 			reactive: true,
@@ -106,12 +103,20 @@ var NoteBox = class NoteBox {
 		});
 
 		this._entryBox.add_child(this.noteEntry);
-		this._scrollView.add_actor(this._entryBox); // yes, actually add_actor
+		this._preview = new St.Label({
+			x_expand: true,
+			y_expand: true,
+			visible: false,
+			style_class: 'notesMarkdownPreview',
+		});
+		this._preview.clutter_text.set_line_wrap(true);
+		this._preview.clutter_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR);
+		this._entryBox.add_child(this._preview);
+		this._scrollView.set_child(this._entryBox);
 		this.actor.add_child(this._scrollView);
 
 		//----------------------------------------------------------------------
 
-		this._grabHelper = new GrabHelper.GrabHelper(this.noteEntry)
 		if (Extension.AUTO_FOCUS) { // TODO dynamically update this setting
 			this.noteEntry.connect('enter-event', this._getKeyFocus.bind(this));
 			this.noteEntry.connect('leave-event', this._leaveKeyFocus.bind(this));
@@ -154,7 +159,7 @@ var NoteBox = class NoteBox {
 	_buildHeaderbar () {
 		// This is the regular header, as described above.
 		this._buttonsBox = new St.BoxLayout({
-			vertical: false,
+			orientation: Clutter.Orientation.HORIZONTAL,
 			visible: true,
 			reactive: true,
 			x_expand: true,
@@ -192,6 +197,11 @@ var NoteBox = class NoteBox {
 		);
 		btnOptions.addMenu();
 		this._buttonsBox.add_child(btnOptions.actor);
+
+		this._previewButton = new Menus.NoteRoundButton(
+			this, 'document-preview-symbolic', _("Markdown preview"));
+		this._previewButton.actor.connect('clicked', () => this.toggleMarkdownPreview());
+		this._buttonsBox.add_child(this._previewButton.actor);
 
 		let ctrlButton = new Menus.NoteRoundButton(
 			this,
@@ -264,6 +274,17 @@ var NoteBox = class NoteBox {
 		this._applyNoteStyle();
 	}
 
+	toggleMarkdownPreview() {
+		const preview = !this._preview.visible;
+		if (preview)
+			this._preview.clutter_text.set_markup(renderMarkdown(this.noteEntry.get_text()));
+		this._preview.visible = preview;
+		this.noteEntry.visible = !preview;
+		if (!preview)
+			this.noteEntry.grab_key_focus();
+		this.onlySave();
+	}
+
 	//--------------------------------------------------------------------------
 	// "Public" methods called by NotesManager ---------------------------------
 
@@ -273,16 +294,24 @@ var NoteBox = class NoteBox {
 				affectsInputRegion: true
 			});
 		} else {
-			Main.layoutManager._backgroundGroup.add_child(this.actor);
+			// Use the desktop background group when available; it is a Shell private API.
+			const backgroundGroup = Main.layoutManager._backgroundGroup;
+			if (backgroundGroup)
+				backgroundGroup.add_child(this.actor);
+			else
+				Main.layoutManager.addChrome(this.actor);
 		}
 	}
 
 	removeFromCorrectLayer () {
 		if (Extension.NOTES_MANAGER.notesNeedChromeTracking()) {
-//			Main.layoutManager.untrackChrome(this.actor);
 			Main.layoutManager.removeChrome(this.actor);
 		} else {
-			Main.layoutManager._backgroundGroup.remove_actor(this.actor);
+			const backgroundGroup = Main.layoutManager._backgroundGroup;
+			if (backgroundGroup && this.actor.get_parent() === backgroundGroup)
+				backgroundGroup.remove_child(this.actor);
+			else if (this.actor.get_parent())
+				Main.layoutManager.removeChrome(this.actor);
 		}
 	}
 
@@ -354,18 +383,19 @@ var NoteBox = class NoteBox {
 			temp += 'font-size: ' + this._fontSize + 'px;';
 		}
 		this.noteEntry.style = temp;
+		this._preview.style = `font-size: ${this._fontSize}px;`;
 	}
 
 	_getKeyFocus () {
 		if (this.entry_is_visible) {
-			this._grabHelper.grab({ actor: this.noteEntry });
 			this.noteEntry.grab_key_focus();
 		}
 		this._redraw();
 	}
 
 	_leaveKeyFocus () {
-		this._grabHelper.ungrab({ actor: this.noteEntry });
+		if (global.stage.get_key_focus() === this.noteEntry)
+			global.stage.set_key_focus(null);
 	}
 
 	_redraw () {
@@ -490,6 +520,9 @@ var NoteBox = class NoteBox {
 	 * the text coloration and the CSS is updated.
 	 */
 	_applyColor (r, g, b) {
+		r = Number(r);
+		g = Number(g);
+		b = Number(b);
 		if (Number.isNaN(r)) r = 255;
 		if (Number.isNaN(g)) g = 255;
 		if (Number.isNaN(b)) b = 255;
@@ -507,12 +540,12 @@ var NoteBox = class NoteBox {
 	}
 
 	_loadText () {
-		let file2 = GLib.build_filenamev([PATH, this.id.toString() + '_text']);
+		let file2 = GLib.build_filenamev([PATH, `${this.id}.md`]);
 		if (!GLib.file_test(file2, GLib.FileTest.EXISTS)) {
 			GLib.file_set_contents(file2, '');
 		}
 
-		let file = Gio.file_new_for_path(PATH + '/' + this.id.toString() + '_text');
+		let file = Gio.file_new_for_path(file2);
 		let [result, contents] = file.load_contents(null);
 		if (!result) {
 			log('Could not read file: ' + PATH);
@@ -527,7 +560,7 @@ var NoteBox = class NoteBox {
 		if (noteText == null) {
 			noteText = '';
 		}
-		let file = GLib.build_filenamev([PATH, this.id.toString() + '_text']);
+		let file = GLib.build_filenamev([PATH, `${this.id}.md`]);
 		GLib.file_set_contents(file, noteText);
 	}
 
@@ -562,7 +595,7 @@ var NoteBox = class NoteBox {
 	}
 
 	_loadState () {
-		let fname = GLib.build_filenamev([PATH, this.id.toString() + '_state']);
+		let fname = GLib.build_filenamev([PATH, `.${this.id}.state`]);
 		if (!GLib.file_test(fname, GLib.FileTest.EXISTS)) {
 			// If a _text file has no corresponding _state file
 			this._createDefaultState(fname);
@@ -599,7 +632,7 @@ var NoteBox = class NoteBox {
 		noteState += this.entry_is_visible.toString() + ';';
 
 		//log('_saveState | ' + this.id.toString() + ' | ' + noteState);
-		let file = GLib.build_filenamev([PATH, this.id.toString() + '_state']);
+		let file = GLib.build_filenamev([PATH, `.${this.id}.state`]);
 		GLib.file_set_contents(file, noteState);
 	}
 
@@ -612,11 +645,10 @@ var NoteBox = class NoteBox {
 	}
 
 	destroy () {
-		this.actor.destroy_all_children();
 		this.actor.destroy();
 		this.actor = null;
 	}
-};
+}
 
 //------------------------------------------------------------------------------
 
