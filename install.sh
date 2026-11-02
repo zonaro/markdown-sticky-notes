@@ -4,11 +4,27 @@ set -euo pipefail
 
 UUID='notes@redclaw.com.br'
 REPO='https://github.com/zonaro/notes-extension-gnome'
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 
-if [[ "${1:-}" == '--github' ]]; then
+# When piped to Bash (`curl .../install.sh | bash`), there is no script file
+# alongside the extension source. Download the latest release automatically.
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    DEFAULT_MODE='local'
+else
+    SCRIPT_DIR=''
+    DEFAULT_MODE='github'
+fi
+
+case "${1:-}" in
+    '') SOURCE_MODE="$DEFAULT_MODE" ;;
+    --github) SOURCE_MODE='github' ;;
+    --local) SOURCE_MODE='local' ;;
+    *) echo 'Usage: install.sh [--github|--local]' >&2; exit 2 ;;
+esac
+
+if [[ "$SOURCE_MODE" == 'github' ]]; then
     if command -v curl >/dev/null 2>&1; then
         curl -fLsS "$REPO/archive/refs/heads/master.tar.gz" -o "$WORK_DIR/source.tar.gz"
         tar -xzf "$WORK_DIR/source.tar.gz" -C "$WORK_DIR"
@@ -21,6 +37,10 @@ if [[ "${1:-}" == '--github' ]]; then
         exit 1
     fi
 else
+    if [[ -z "$SCRIPT_DIR" ]]; then
+        echo 'Error: local installation requires a script file in a checkout.' >&2
+        exit 1
+    fi
     SOURCE_DIR="$SCRIPT_DIR/$UUID"
 fi
 

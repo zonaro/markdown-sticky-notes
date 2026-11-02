@@ -10,23 +10,24 @@ by this branch; the older release is available in the Git history.
 
 ## Install / update
 
-Requires GNOME Shell 50 or 51, `glib-compile-schemas` and either `curl` or `git`.
-Fedora usually ships the required GLib tooling already.
-
-Run the installer directly from a checkout:
+To **install or update** to the latest version from the `master` branch, run
+this **single command** in a terminal:
 
 ```bash
-git clone https://github.com/zonaro/notes-extension-gnome.git
-cd notes-extension-gnome
-./install.sh
+curl -fLsS https://raw.githubusercontent.com/zonaro/notes-extension-gnome/master/install.sh | bash
 ```
 
-Or download the installer first and ask it to fetch the latest source from the
-repository (review the script before running it):
+This downloads and runs the installer, which then downloads the current source
+from GitHub and installs or updates it. **Only run shell scripts you trust**;
+you can [inspect the installer](install.sh) before using the one-liner.
+
+Requires GNOME Shell 50 or 51, `glib-compile-schemas` and `curl`.
+Fedora usually ships the required GLib tooling already.
+
+To install from a local checkout instead (without downloading source again):
 
 ```bash
-curl -fLsS https://raw.githubusercontent.com/zonaro/notes-extension-gnome/master/install.sh -o install-notes.sh
-bash install-notes.sh --github
+./install.sh --local
 ```
 
 The installer targets the current user (no `sudo`), compiles GSettings schemas,
