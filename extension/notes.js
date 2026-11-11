@@ -52,6 +52,7 @@ import {
 import {DesktopLayer, PinnedLayer} from './layer.js';
 import {NoteFiles} from './filesync.js';
 import {t} from './i18n.js';
+import {renderMarkdown} from './markdown-preview.js';
 import {NoteRibbon} from './ribbon.js';
 
 const BUTTON_PRIMARY = 1;
@@ -258,6 +259,7 @@ export class NoteBoard {
             view.loading = true;
             try {
                 view.text.text = note.text;
+                this._refreshPreview(view);
                 this._moveToLayer(view);
                 this._layout(view);
                 this._paint(view);
@@ -555,10 +557,21 @@ export class NoteBoard {
         // ScrollView.child must implement St.Scrollable. Clutter.Text does not;
         // St.BoxLayout does, and it holds the text.
         const page = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
         page.add_child(text);
+        const preview = new St.Label({
+            style_class: 'sticky-note-preview',
+            x_expand: true,
+            y_expand: true,
+            y_align: Clutter.ActorAlign.START,
+            visible: false,
+        });
+        preview.clutter_text.line_wrap = true;
+        preview.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+        page.add_child(preview);
         const scroll = new St.ScrollView({
             style_class: 'sticky-note-scroll',
             overlay_scrollbars: true,
@@ -589,7 +602,8 @@ export class NoteBoard {
         editClick.set_recognize_on_press(false);
 
         const view = {
-            note, frame, card, grip, text, resize, scroll, editClick,
+            note, frame, card, grip, text, preview, resize, scroll, editClick,
+            previewMode: false,
             editing: false,
             hold: false,
             pending: 0,
@@ -675,6 +689,7 @@ export class NoteBoard {
         card.set_position(0, 0);
         card.set_size(note.w, note.h);
         text.width = Math.max(48, note.w - 26);
+        view.preview.width = Math.max(48, note.w - 26);
         text.min_height = 0;
         resize.set_position(Math.max(0, note.w - HANDLE), Math.max(0, note.h - HANDLE));
         resize.set_size(HANDLE, HANDLE);
@@ -739,7 +754,7 @@ export class NoteBoard {
         this._focused = view;
         this._moveToLayer(view);
         this._orderNote(view);
-        if (grabText && !view.note.locked && view.frame.visible) {
+        if (grabText && !view.note.locked && !view.previewMode && view.frame.visible) {
             view.editing = true;
             view.text.grab_key_focus();
         }
@@ -795,7 +810,7 @@ export class NoteBoard {
         }
         if (event.get_button() === BUTTON_PRIMARY &&
             !this._onChrome(view, global.stage.get_event_actor(event)))
-            this._focus(view, !view.note.locked);
+            this._focus(view, !view.note.locked && !view.previewMode);
         return Clutter.EVENT_PROPAGATE;
     }
 
@@ -813,7 +828,7 @@ export class NoteBoard {
             this._openMenu(view);
             return Clutter.EVENT_STOP;
         }
-        if (event.get_button() === BUTTON_PRIMARY && !view.note.locked)
+        if (event.get_button() === BUTTON_PRIMARY && !view.note.locked && !view.previewMode)
             this._focus(view, true);
         return Clutter.EVENT_PROPAGATE;
     }
@@ -845,6 +860,8 @@ export class NoteBoard {
     // A press on the note body outside the text, in its margins, places the
     // caret and drags a selection the way a press on the text does.
     _onBodyEvent(view, event) {
+        if (view.previewMode)
+            return Clutter.EVENT_PROPAGATE;
         const type = event.type();
         const drag = this._textDrag;
         if (drag && drag.view === view) {
@@ -1216,7 +1233,7 @@ export class NoteBoard {
         if (!view.ribbon.actor.get_parent())
             return;
         const editing = view.editing && global.stage.get_key_focus() === view.text;
-        const show = !view.note.locked && view.frame.visible && editing;
+        const show = !view.note.locked && !view.previewMode && view.frame.visible && editing;
         const was = view.ribbon.visible();
         view.ribbon.setVisible(show);
         view.ribbon.setSize(this._toolSize(view));
@@ -1402,6 +1419,32 @@ export class NoteBoard {
         this._scheduleSave();
     }
 
+    _refreshPreview(view) {
+        if (!view.previewMode)
+            return;
+        try {
+            view.preview.clutter_text.set_markup(renderMarkdown(view.note.text));
+        } catch (error) {
+            console.warn(`Sticky Notes: could not render Markdown preview: ${error}`);
+            view.preview.text = view.note.text;
+        }
+    }
+
+    _togglePreview(view) {
+        view.previewMode = !view.previewMode;
+        if (view.previewMode) {
+            if (global.stage.get_key_focus() === view.text)
+                global.stage.set_key_focus(null);
+            this._refreshPreview(view);
+        }
+        view.text.visible = !view.previewMode;
+        view.preview.visible = view.previewMode;
+        this._syncRibbon(view);
+        this._layout(view);
+        if (!view.previewMode)
+            this._focusLater(view);
+    }
+
     _toggleLock(view) {
         view.note.locked = !view.note.locked;
         this._paint(view);
@@ -1453,6 +1496,10 @@ export class NoteBoard {
         };
         menu.addAction(t('New note'), () => later(() => this._create(null)), 'document-new-symbolic');
         menu.addAction(t('Duplicate'), () => later(() => this._duplicate(view)), 'view-dual-symbolic');
+        menu.addAction(
+            t(view.previewMode ? 'Edit Markdown' : 'Preview Markdown'),
+            () => later(() => this._togglePreview(view)),
+            view.previewMode ? 'document-edit-symbolic' : 'document-preview-symbolic');
         menu.addAction(
             t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
             () => later(() => this._togglePin(view)),
