@@ -1463,7 +1463,7 @@ export class NoteBoard {
             view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic');
         menu.addAction(t('Smaller text'), () => later(() => this._stepSize(view, -1)), 'zoom-out-symbolic');
         menu.addAction(t('Larger text'), () => later(() => this._stepSize(view, 1)), 'zoom-in-symbolic');
-        menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'user-trash-symbolic');
+        menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'edit-delete-symbolic');
 
         this._menu = menu;
         this._menuView = view;
