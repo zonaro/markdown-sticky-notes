@@ -38,6 +38,15 @@
 .sticky-note.aqua,
 .sticky-swatch.aqua { background-color: #c9eee6; }
 
+/* A pinned note has a stronger frame and a visible top-edge marker. */
+.sticky-note.pinned {
+    border: 2px solid rgba(50, 47, 56, 0.38);
+}
+
+.sticky-note.pinned .sticky-note-grip {
+    background-color: rgba(50, 47, 56, 0.16);
+}
+
 .sticky-note-grip {
     min-height: 18px;
     background-color: rgba(50, 47, 56, 0.05);
@@ -108,10 +117,6 @@
     font-weight: bold;
     color: #322f38;
     padding: 0 2px;
-}
-
-.sticky-notes-bin-list {
-    max-height: 280px;
 }
 
 .sticky-note-colors {
