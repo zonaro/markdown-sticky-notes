@@ -11,6 +11,8 @@ export class NoteFiles {
         this._onChange = onChange;
         this._onDelete = onDelete;
         this._known = new Map();
+        // Tombstones stop stale UI writes from resurrecting externally deleted notes.
+        this._deleted = new Set();
         this._monitor = null;
         this._monitorId = 0;
         this._scanId = 0;
@@ -103,6 +105,7 @@ export class NoteFiles {
         for (const name of [...this._known.keys()]) {
             if (!present.has(name)) {
                 this._known.delete(name);
+                this._deleted.add(name);
                 this._onDelete(name);
             }
         }
@@ -116,8 +119,11 @@ export class NoteFiles {
                 console.warn(`Sticky Notes: could not read ${name}: ${error}`);
                 continue;
             }
-            if (this._known.get(name) === document)
+            if (this._known.get(name) === document) {
+                this._deleted.delete(name);
                 continue;
+            }
+            this._deleted.delete(name);
             this._known.set(name, document);
             this._onChange(name, parseDocument(document));
         }
@@ -126,6 +132,12 @@ export class NoteFiles {
     save(note) {
         const name = note.filename;
         const file = this._file(name);
+        if (this._deleted.has(name)) {
+            // An external delete (or rename) takes precedence over pending
+            // edits. A new note must always use a fresh filename.
+            this.queueScan();
+            return false;
+        }
         const previous = this._known.get(name);
         // Someone removed/modified the file before the file watcher fired:
         // the filesystem wins, and must not be silently overwritten.
@@ -168,6 +180,7 @@ export class NoteFiles {
             }
         }
         this._known.delete(name);
+        this._deleted.add(name);
         return true;
     }
 }
