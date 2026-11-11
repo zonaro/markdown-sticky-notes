@@ -1,8 +1,12 @@
 {
-  "uuid": "sticky-notes@johanan.in",
-  "name": "Sticky Notes",
-  "description": "Sticky notes on the desktop, in soft pastel colors. Notes stay off the dock, the app switcher, and the overview.",
-  "shell-version": ["51"],
+  "uuid": "notes@redclaw.com.br",
+  "name": "Notes",
+  "description": "Desktop sticky notes backed by synchronized Markdown files in ~/notes/.",
+  "shell-version": [
+    "50",
+    "51"
+  ],
   "settings-schema": "org.gnome.shell.extensions.sticky-notes",
-  "url": "https://github.com/johanan-23/gnome-sticky-notes"
+  "url": "https://github.com/zonaro/notes-extension-gnome",
+  "version": 1
 }
