@@ -1,5 +1,5 @@
 // Note documents and placement. No Shell or GI imports, so the rules can be
-// checked outside a session. The on-disk shape matches notes.json.
+// checked outside a session. Note text and layout live in Markdown frontmatter.
 
 import {lineMark} from './format.js';
 
