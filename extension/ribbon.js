@@ -11,6 +11,7 @@ import {
     STYLE_STRIKE,
     STYLE_UNDERLINE,
 } from './format.js';
+import {t} from './i18n.js';
 
 const STYLES = [
     {bit: STYLE_BOLD, icon: 'format-text-bold-symbolic', name: 'Bold'},
@@ -116,7 +117,7 @@ export class NoteRibbon {
             x_expand: false,
             y_align: Clutter.ActorAlign.CENTER,
             layout_manager: new Clutter.BinLayout(),
-            accessible_name: name,
+            accessible_name: t(name),
         });
         button.add_child(new St.Icon({
             icon_name: icon,
