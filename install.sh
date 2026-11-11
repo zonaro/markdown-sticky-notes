@@ -3,6 +3,21 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Explicit remote installation option used by the GNOME QA checklist.
+# Running the downloaded script without --github prevents recursive downloads.
+if [[ "${1:-}" == "--github" ]]; then
+    remote_tmp="$(mktemp -d)"
+    trap 'rm -rf "$remote_tmp"' EXIT
+    curl -fsSL https://github.com/zonaro/notes-extension-gnome/archive/refs/heads/master.tar.gz |
+        tar -xz -C "$remote_tmp"
+    bash "$remote_tmp/notes-extension-gnome-master/install.sh" --local
+    exit 0
+fi
+if [[ "$#" -gt 0 && "${1:-}" != "--local" ]]; then
+    echo "Usage: $0 [--local|--github]" >&2
+    exit 2
+fi
+
 uuid="$(python3 -c 'import json; print(json.load(open("extension/metadata.json"))["uuid"])')"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 ext="$data_home/gnome-shell/extensions/$uuid"
