@@ -6,8 +6,8 @@ import {parseDocument, writeDocument} from './document.js';
 // Disk is authoritative. A monitor updates the live UI, and all extension
 // writes go through the same snapshots to avoid its own monitor feedback.
 export class NoteFiles {
-    constructor(onChange, onDelete) {
-        this.directory = GLib.build_filenamev([GLib.get_home_dir(), 'notes']);
+    constructor(onChange, onDelete, directory = null) {
+        this.directory = directory ?? GLib.build_filenamev([GLib.get_home_dir(), 'notes']);
         this._onChange = onChange;
         this._onDelete = onDelete;
         this._known = new Map();
@@ -18,7 +18,6 @@ export class NoteFiles {
 
     start() {
         GLib.mkdir_with_parents(this.directory, 0o755);
-        this.scan();
         const folder = Gio.File.new_for_path(this.directory);
         try {
             this._monitor = folder.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
@@ -29,6 +28,9 @@ export class NoteFiles {
         } catch (error) {
             console.error(`Sticky Notes: cannot monitor ${this.directory}: ${error}`);
         }
+        // Start watching before the initial enumeration, closing the gap
+        // where an external editor could write a file during startup.
+        this.scan();
     }
 
     stop() {
@@ -57,12 +59,14 @@ export class NoteFiles {
         return Gio.File.new_for_path(GLib.build_filenamev([this.directory, name]));
     }
 
-    newFilename(id) {
+    newFilename() {
+        // A timestamp is the stable identity in the filename; note IDs remain
+        // private frontmatter metadata and never leak into the pathname.
         const stamp = GLib.get_real_time();
-        let name = `note-${stamp}-${id}.md`;
+        let name = `note-${stamp}.md`;
         let n = 0;
         while (this._known.has(name) || this._file(name).query_exists(null))
-            name = `note-${stamp}-${id}-${++n}.md`;
+            name = `note-${stamp}-${++n}.md`;
         return name;
     }
 
