@@ -62,3 +62,36 @@ test('rich text ranges remain serializable as YAML-compatible JSON', () => {
     const decoded = parseDocument(writeDocument(decorated));
     assert.deepEqual(decoded.metadata.spans, decorated.spans);
 });
+
+
+test('invalid numeric metadata uses the default while preserving other fields', () => {
+    const input = '---\ngnome-notes-x: abc\ngnome-sticky-height: 180\n---\n# Content';
+    const parsed = parseDocument(input);
+    assert.equal(parsed.metadata.x, undefined);
+    assert.equal(parsed.metadata.h, 180);
+    assert.equal(parsed.body, '# Content');
+});
+
+test('unterminated YAML is treated as content and not silently removed', () => {
+    const broken = '---\ntitle: My task\n- important text\n';
+    assert.deepEqual(parseDocument(broken).metadata, {});
+    assert.equal(parseDocument(broken).body, broken);
+    const result = writeDocument(note, broken);
+    assert.equal(parseDocument(result).body, note.text);
+});
+
+test('user frontmatter is preserved even when it contains comments', () => {
+    const previous = '---\n# personal comment\ntitle: My title\ntags: [notes]\ngnome-sticky-id: 1\n---\nhello';
+    const encoded = writeDocument(note, previous);
+    assert.match(encoded, /# personal comment/);
+    assert.match(encoded, /title: My title/);
+    assert.match(encoded, /tags: \[notes\]/);
+    assert.equal((encoded.match(/gnome-sticky-id:/g) ?? []).length, 1);
+});
+
+test('supports CRLF frontmatter without changing the Markdown content', () => {
+    const input = '---\r\ngnome-sticky-x: 11\r\n---\r\n# Title\r\n';
+    const parsed = parseDocument(input);
+    assert.equal(parsed.metadata.x, 11);
+    assert.equal(parsed.body, '# Title\r\n');
+});
