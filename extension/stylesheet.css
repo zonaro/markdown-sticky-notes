@@ -141,3 +141,10 @@
 .sticky-swatch.current {
     border-color: rgba(50, 47, 56, 0.78);
 }
+
+/* Preview uses only generated safe Pango markup, never HTML from a file. */
+.sticky-note-preview {
+    color: #322f38;
+    font-size: 13pt;
+    padding: 6px 14px 12px 12px;
+}
