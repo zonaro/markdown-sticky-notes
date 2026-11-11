@@ -1,133 +1,104 @@
-# Notes — GNOME Shell extension
+# Sticky Notes
 
-Sticky notes for GNOME Shell with editable Markdown files and a built-in preview.
+Sticky notes on the desktop, in soft pastel colors. Notes stay off the dock, the app switcher, and the overview. They can sit on every workspace, and an unfocused note tucks behind other windows.
 
-![Notes screenshot](notes@redclaw.com.br/screenshots/about_picture.png)
+Sticky Notes is free software under the GNU General Public License, version 2 or any later version. See [LICENSE](LICENSE).
 
-This fork targets **GNOME Shell 50 and 51**. It uses modern GNOME Shell ECMAScript
-modules and GTK4/libadwaita preferences. GNOME 44 and older are **not** supported
-by this branch; the older release is available in the Git history.
+## Daily use
 
-## Install / update
+The top-bar icon creates a note, hides or shows every note, and keeps a recycle bin. Settings live in the same menu.
 
-To **install or update** to the latest version from the `master` branch, run
-this **single command** in a terminal:
+| Action | Default shortcut |
+| --- | --- |
+| New note at the pointer | Ctrl+Super+N |
+| Show or hide every note | Ctrl+Super+H |
 
-```bash
-curl -fLsS https://raw.githubusercontent.com/zonaro/notes-extension-gnome/master/install.sh | bash
-```
+Both shortcuts can be changed or turned off in the extension settings. Backspace clears a shortcut.
 
-This downloads and runs the installer, which then downloads the current source
-from GitHub and installs or updates it. **Only run shell scripts you trust**;
-you can [inspect the installer](install.sh) before using the one-liner.
+Notes are stored in `~/.local/share/sticky-notes/notes.json`.
 
-Requires GNOME Shell 50 or 51, `glib-compile-schemas` and `curl`.
-Fedora usually ships the required GLib tooling already.
+## How it works
 
-To install from a local checkout instead (without downloading source again):
+The notes are actors in the Shell session, the same kind of widget as the top bar. They are not separate windows, so they stay off the dock, the app switcher, and the overview. Creating a note does not start another process.
 
-```bash
-./install.sh --local
-```
+`src/` is an earlier GTK notes program. The extension does not launch it, and changes to the extension do not need it.
 
-The installer targets the current user (no `sudo`), compiles GSettings schemas,
-and backs up any previous installation of the **new UUID** under
-`~/.local/share/gnome-notes-extension-backups/`.
-It does not migrate files from the old extension.
+## Local development
 
-**Log out and log back in** to load the new extension under Wayland. Then run:
+You need GNOME Shell 51 on Wayland, plus `git`, `python3`, and `glib-compile-schemas` (from the GLib development tools, usually already installed with GNOME).
+
+Clone the repository and install the extension from your checkout:
 
 ```bash
-gnome-extensions enable notes@redclaw.com.br
-gnome-extensions prefs notes@redclaw.com.br
+git clone https://github.com/johanan-23/gnome-sticky-notes.git
+cd gnome-sticky-notes
+./install.sh
 ```
 
-If enabling fails, check the GNOME Shell logs:
+`install.sh` copies `extension/` into `~/.local/share/gnome-shell/extensions/sticky-notes@johanan.in/`, compiles the settings schema there, and enables the extension. The first time, log out and back in so GNOME Shell picks it up.
+
+### Edit, reload, repeat
+
+GNOME Shell on Wayland cannot reload an extension's JavaScript in a running session. After each change, run `./install.sh` again and then either:
+
+- log out and back in, or
+- test in a nested Shell so your own session is untouched:
+
+  ```bash
+  dbus-run-session gnome-shell --devkit --wayland
+  ```
+
+  The nested Shell loads the extension from the same install folder. Notes created there are written to the same `notes.json`, so back it up first if you care about your own notes.
+
+### Logs and settings
+
+Watch Shell output, including errors and `console.log` calls from the extension:
 
 ```bash
-journalctl --user -b | grep -i 'notes@redclaw.com.br'
+journalctl -f -o cat /usr/bin/gnome-shell
 ```
 
-## Markdown and note storage
-
-Each note is a normal UTF-8 Markdown file in **`~/notes/`**. The extension
-monitors this folder while GNOME Shell is running, and the filenames are stable:
-
-- Create `~/notes/ideas.md` (or `ideas.markdown`) in another editor: a new sticky
-  note appears automatically, without restarting GNOME Shell.
-- Edit the file outside the extension: the sticky note updates automatically.
-- Edit a sticky note in GNOME: the corresponding file is saved automatically
-  shortly after typing, or immediately when changing its appearance or position.
-- Delete a sticky note: its Markdown file is deleted. Delete a Markdown file in
-  `~/notes/`: the corresponding sticky note disappears. Renaming a file changes
-  the note's filename without renumbering other files.
-- Notes with no YAML frontmatter receive default layout and formatting metadata
-  **automatically**, written into the same file. If the frontmatter is malformed
-  or contains invalid values, defaults are used instead. Malformed source text
-  is preserved and is only rewritten when the note is next saved.
-
-All note layout metadata (position, size, color, font size and visibility) lives
-in the Markdown frontmatter. **No `.state` files are created or read.**
-Only regular `.md` and `.markdown` files directly inside `~/notes/` are watched;
-subdirectories and other file types are ignored. When the same note is edited in
-two applications simultaneously, the last save wins.
-
-Example:
-
-```markdown
----
-gnome-notes-x: 40
-gnome-notes-y: 80
-gnome-notes-width: 250
-gnome-notes-height: 180
-gnome-notes-color: "255,255,50"
-gnome-notes-font-size: 16
-gnome-notes-body-visible: true
----
-# My note
-**Markdown** content here.
-```
-
-Edit notes normally, or click the preview button (page icon) on a note to switch
-between raw Markdown and a formatted preview. The preview supports headings,
-paragraphs, lists, blockquotes, horizontal rules, code blocks, inline code,
-**bold**, *italic*, ~~strikethrough~~ and visible link text. Links in the
-preview are display-only, not clickable. Markdown files themselves remain
-plain text and can be edited with your favorite editor.
-
-There is deliberately **no migration from old Notes versions**. The extension
-does not inspect, convert or remove legacy `.state` or `_text` files. Back up
-`~/notes/` periodically if you keep important information there.
-
-The extension's UUID is now **`notes@redclaw.com.br`**. Its installation lives
-under `~/.local/share/gnome-shell/extensions/notes@redclaw.com.br/`, but the
-user's Markdown files stay in `~/notes/`. If the older extension is still
-installed, disable `notes@maestroschan.fr` separately in the Extensions app.
-
-## Other features
-
-- Toggle notes from the top panel or a configurable keyboard shortcut.
-- Create/delete notes, resize and move notes, adjust colors and font size.
-- Choose foreground, background, or a three-state cycle.
-- GTK4/libadwaita preferences, including a button to open `~/notes/`.
-- Languages shipped: English, Spanish, French, Croatian, Dutch, Brazilian
-  Portuguese, Turkish, and Chinese (new strings may initially appear in English).
-
-## Build a ZIP
+Open the settings window directly:
 
 ```bash
-./build-a-zip.sh
+gnome-extensions prefs sticky-notes@johanan.in
 ```
 
-The current archive is named `notes@redclaw.com.br.zip`; old ZIPs with the
-previous UUID should not be installed.
+If you add or rename a key in `extension/schemas/org.gnome.shell.extensions.sticky-notes.gschema.xml`, `install.sh` recompiles the schema. Do not commit `gschemas.compiled`.
 
-## Validation
+### Lint (optional)
 
-Syntax and packaging can be checked without a running Shell; full integration
-must be checked on GNOME 50 and GNOME 51, including note rendering, focus,
-background mode, keyboard shortcut, and frontmatter persistence.
+[shexli](https://pypi.org/project/shexli/) checks the extension against the rules extensions.gnome.org uses. Running it before a PR catches most problems a reviewer would raise:
 
-## License and upstream
+```bash
+./tools/pack.sh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -U shexli
+shexli dist/sticky-notes@johanan.in.shell-extension.zip
+```
 
-GPL-3.0. Original extension by [Romain F. T.](https://github.com/maoschanz/notes-extension-gnome).
+Shexli may report `shell-version` 51 as a future release. That is expected; leave `"51"` in `extension/metadata.json`.
+
+## Contributing
+
+1. Fork the repository on GitHub and clone your fork.
+2. Create a branch from `main` with a short descriptive name, for example `fix-note-resize`.
+3. Make your change, install it with `./install.sh`, and try it in a real or nested Shell. Check the journal for errors.
+4. Keep commits focused, and write commit messages that say what changed and why.
+5. Push the branch to your fork and open a pull request against `main`. In the description, say what the change does, how you tested it, and include a screenshot or short recording for anything visible.
+
+Please do not bump `version` in `extension/metadata.json` or commit anything from `dist/`; the maintainer handles releases.
+
+If you are unsure whether a change is wanted, open an issue first to discuss it.
+
+## Project layout
+
+| Path | What it is |
+| --- | --- |
+| `extension/` | The Shell extension: `extension.js`, the notes, `prefs.js`, settings schema, icon |
+| `assets/` | Icon source (SVG) and the PNG used on the extension's listing page |
+| `src/` | The earlier GTK notes program. The extension does not run it. |
+| `install.sh` | Install the extension from this checkout for the current user |
+| `tools/pack.sh` | Build the extension zip into `dist/` |
+| `tools/cc`, `tools/gen-sysroot.sh` | Fallback linker for building `src/` on a machine without a C compiler or gtk4 development files. Not needed for extension work. |
