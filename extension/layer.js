@@ -173,6 +173,7 @@ export class PinnedLayer {
         this.actor.set_no_layout(true);
         this._syncSize();
         Main.layoutManager.addChrome(this.actor, {
+            affectsInputRegion: false,
             affectsStruts: false,
             trackFullscreen: true,
         });
