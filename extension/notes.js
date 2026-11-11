@@ -110,7 +110,6 @@ export class NoteBoard {
         this._focused = null;
         this._overview = Main.overview.visible;
         this._byFilename = new Map();
-        this._trackedPinned = new Set();
         this._files = null;
         this._ink = color4(50 / 255, 47 / 255, 56 / 255, 1);
         this._select = color4(50 / 255, 47 / 255, 56 / 255, 0.16);
@@ -155,7 +154,6 @@ export class NoteBoard {
         for (const view of [...this._views.values()])
             this._drop(view);
         this._byFilename.clear();
-        this._trackedPinned.clear();
         this._files = null;
         this._desktop.destroy();
         this._pinnedLayer.destroy();
@@ -444,33 +442,14 @@ export class NoteBoard {
         return note.pinned ? this._pinnedLayer.actor : this._layer;
     }
 
-    _trackPinned(view) {
-        if (this._trackedPinned.has(view.frame))
-            return;
-        // The parent has no input region. Track the note's actual rectangle
-        // so clicks outside pinned notes continue to reach applications.
-        Main.layoutManager.trackChrome(view.frame, {affectsInputRegion: true});
-        this._trackedPinned.add(view.frame);
-    }
-
-    _untrackPinned(view) {
-        if (!this._trackedPinned.has(view.frame))
-            return;
-        Main.layoutManager.untrackChrome(view.frame);
-        this._trackedPinned.delete(view.frame);
-    }
-
     _moveToLayer(view) {
         const target = this._layerFor(view.note);
         const parent = view.frame.get_parent();
         if (parent !== target) {
-            this._untrackPinned(view);
             parent?.remove_child(view.frame);
             target.add_child(view.frame);
             this._layout(view);
         }
-        if (target === this._pinnedLayer.actor)
-            this._trackPinned(view);
     }
 
     _mount(note, focus) {
@@ -479,8 +458,6 @@ export class NoteBoard {
         this._byFilename.set(note.filename, view);
         this._desktop.seat();
         this._layerFor(note).add_child(view.frame);
-        if (note.pinned)
-            this._trackPinned(view);
         this._layout(view);
         this._paint(view);
         this._applyVisibility();
@@ -719,7 +696,6 @@ export class NoteBoard {
     }
 
     _drop(view) {
-        this._untrackPinned(view);
         for (const key of ['rewriteId', 'focusId', 'newlineId']) {
             if (view[key]) {
                 GLib.Source.remove(view[key]);
