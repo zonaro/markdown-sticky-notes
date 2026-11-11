@@ -49,7 +49,7 @@ import {
     freshOrigin,
     normalizeSize,
 } from './model.js';
-import {DesktopLayer} from './layer.js';
+import {DesktopLayer, PinnedLayer} from './layer.js';
 import {NoteFiles} from './filesync.js';
 import {NoteRibbon} from './ribbon.js';
 
@@ -112,6 +112,7 @@ export class NoteBoard {
         this._ink = color4(50 / 255, 47 / 255, 56 / 255, 1);
         this._select = color4(50 / 255, 47 / 255, 56 / 255, 0.16);
         this._desktop = new DesktopLayer();
+        this._pinnedLayer = new PinnedLayer();
         this._layer = this._desktop.actor;
         this._menuManager = new PopupMenu.PopupMenuManager(this._layer);
 
@@ -153,7 +154,9 @@ export class NoteBoard {
         this._byFilename.clear();
         this._files = null;
         this._desktop.destroy();
+        this._pinnedLayer.destroy();
         this._desktop = null;
+        this._pinnedLayer = null;
         this._layer = null;
     }
 
@@ -429,12 +432,26 @@ export class NoteBoard {
             this._delete(view);
     }
 
+    _layerFor(note) {
+        return note.pinned ? this._pinnedLayer.actor : this._layer;
+    }
+
+    _moveToLayer(view) {
+        const target = this._layerFor(view.note);
+        const parent = view.frame.get_parent();
+        if (parent !== target) {
+            parent?.remove_child(view.frame);
+            target.add_child(view.frame);
+            this._layout(view);
+        }
+    }
+
     _mount(note, focus) {
         const view = this._build(note);
         this._views.set(note.id, view);
         this._byFilename.set(note.filename, view);
         this._desktop.seat();
-        this._layer.add_child(view.frame);
+        this._layerFor(note).add_child(view.frame);
         this._layout(view);
         this._paint(view);
         this._applyVisibility();
@@ -644,6 +661,10 @@ export class NoteBoard {
         for (const color of PALETTE)
             view.card.remove_style_class_name(color);
         view.card.add_style_class_name(name);
+        if (view.note.pinned)
+            view.card.add_style_class_name('pinned');
+        else
+            view.card.remove_style_class_name('pinned');
         view.text.editable = !view.note.locked;
         const cursor = view.note.locked
             ? Clutter.CursorType.DEFAULT
@@ -691,12 +712,7 @@ export class NoteBoard {
 
     _focus(view, grabText) {
         this._focused = view;
-        const parent = view.frame.get_parent();
-        if (parent && parent !== this._layer) {
-            parent.remove_child(view.frame);
-            this._layer.add_child(view.frame);
-            this._layout(view);
-        }
+        this._moveToLayer(view);
         this._orderNote(view);
         if (grabText && !view.note.locked && view.frame.visible) {
             view.editing = true;
@@ -708,8 +724,9 @@ export class NoteBoard {
     _orderNote(view) {
         if (!this._settings.get_boolean('sink-unfocused'))
             return;
-        if (view.frame.get_parent() === this._layer)
-            this._layer.set_child_above_sibling(view.frame, null);
+        const parent = view.frame.get_parent();
+        if (parent === this._layer || parent === this._pinnedLayer.actor)
+            parent.set_child_above_sibling(view.frame, null);
     }
 
     _blur() {
@@ -1352,6 +1369,14 @@ export class NoteBoard {
         this._scheduleSave();
     }
 
+    _togglePin(view) {
+        view.note.pinned = !view.note.pinned;
+        this._moveToLayer(view);
+        this._paint(view);
+        this._orderNote(view);
+        this._scheduleSave();
+    }
+
     _toggleLock(view) {
         view.note.locked = !view.note.locked;
         this._paint(view);
@@ -1403,6 +1428,10 @@ export class NoteBoard {
         };
         menu.addAction('New note', () => later(() => this._create(null)), 'document-new-symbolic');
         menu.addAction('Duplicate', () => later(() => this._duplicate(view)), 'view-dual-symbolic');
+        menu.addAction(
+            view.note.pinned ? 'Unpin note' : 'Pin above windows',
+            () => later(() => this._togglePin(view)),
+            view.note.pinned ? 'window-restore-symbolic' : 'view-pin-symbolic');
         menu.addAction(
             view.note.locked ? 'Unlock' : 'Lock',
             () => later(() => this._toggleLock(view)),
