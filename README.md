@@ -18,10 +18,12 @@ A RedClaw GNOME Shell extension rebuilt from [johanan-23/gnome-sticky-notes](htt
 Requires GNOME Shell 51 on Wayland for the upstream-tested baseline. The extension metadata also targets GNOME 50, which still needs runtime verification.
 
 ```bash
-git clone https://github.com/zonaro/notes-extension-gnome.git
-cd notes-extension-gnome
-./install.sh
+bash -c 'set -e; d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT; curl -fsSL https://github.com/zonaro/notes-extension-gnome/archive/refs/heads/master.tar.gz | tar -xz -C "$d"; bash "$d/notes-extension-gnome-master/install.sh"'
 ```
+
+Copy and paste the single command above to install or update. It downloads the latest `master` archive into a temporary directory, runs the existing installer, then removes the temporary files. Requires `curl`, `tar`, Python 3 and `glib-compile-schemas`. Review the source before executing remote installation commands.
+
+[Documentation and landing page](https://zonaro.github.io/notes-extension-gnome/) · [Source](https://github.com/zonaro/notes-extension-gnome)
 
 The installer installs to `~/.local/share/gnome-shell/extensions/notes@redclaw.com.br/`, compiles schemas and backs up the previous extension install to `~/.local/share/gnome-notes-extension-backups/`. **It never removes or migrates `~/notes/`.**
 
