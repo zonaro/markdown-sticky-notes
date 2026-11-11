@@ -1,0 +1,30 @@
+name: Static checks
+on:
+  push:
+  pull_request:
+
+jobs:
+  markdown-and-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax
+        run: npm run lint:syntax
+      - name: Run Markdown/frontmatter tests
+        run: npm test
+      - name: Validate extension metadata
+        run: |
+          python3 -m json.tool extension/metadata.json >/dev/null
+          python3 - <<'PY'
+          import json
+          data = json.load(open('extension/metadata.json'))
+          assert data['uuid'] == 'notes@redclaw.com.br'
+          assert '51' in data['shell-version']
+          PY
+      - name: Validate install scripts
+        run: bash -n install.sh tools/pack.sh
+      - name: Validate GSettings schema
+        run: glib-compile-schemas --strict --dry-run extension/schemas
