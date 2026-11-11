@@ -51,6 +51,7 @@ import {
 } from './model.js';
 import {DesktopLayer, PinnedLayer} from './layer.js';
 import {NoteFiles} from './filesync.js';
+import {t} from './i18n.js';
 import {NoteRibbon} from './ribbon.js';
 
 const BUTTON_PRIMARY = 1;
@@ -1395,7 +1396,7 @@ export class NoteBoard {
             x_expand: true,
         });
         colors.add_child(new St.Label({
-            text: 'Color',
+            text: t('Color'),
             style_class: 'sticky-note-caption',
             x_align: Clutter.ActorAlign.START,
         }));
@@ -1411,7 +1412,7 @@ export class NoteBoard {
                     width: 22,
                     height: 22,
                     can_focus: false,
-                    accessible_name: COLOR_LABELS[name],
+                    accessible_name: t(COLOR_LABELS[name]),
                 });
                 button.connectObject('clicked', () => {
                     this._setColor(view, index);
@@ -1426,19 +1427,19 @@ export class NoteBoard {
         const later = fn => {
             this._menuThen = fn;
         };
-        menu.addAction('New note', () => later(() => this._create(null)), 'document-new-symbolic');
-        menu.addAction('Duplicate', () => later(() => this._duplicate(view)), 'view-dual-symbolic');
+        menu.addAction(t('New note'), () => later(() => this._create(null)), 'document-new-symbolic');
+        menu.addAction(t('Duplicate'), () => later(() => this._duplicate(view)), 'view-dual-symbolic');
         menu.addAction(
-            view.note.pinned ? 'Unpin note' : 'Pin above windows',
+            t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
             () => later(() => this._togglePin(view)),
             view.note.pinned ? 'window-restore-symbolic' : 'view-pin-symbolic');
         menu.addAction(
-            view.note.locked ? 'Unlock' : 'Lock',
+            t(view.note.locked ? 'Unlock' : 'Lock'),
             () => later(() => this._toggleLock(view)),
             view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic');
-        menu.addAction('Smaller text', () => later(() => this._stepSize(view, -1)), 'zoom-out-symbolic');
-        menu.addAction('Larger text', () => later(() => this._stepSize(view, 1)), 'zoom-in-symbolic');
-        menu.addAction('Delete', () => later(() => this._delete(view)), 'user-trash-symbolic');
+        menu.addAction(t('Smaller text'), () => later(() => this._stepSize(view, -1)), 'zoom-out-symbolic');
+        menu.addAction(t('Larger text'), () => later(() => this._stepSize(view, 1)), 'zoom-in-symbolic');
+        menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'user-trash-symbolic');
 
         this._menu = menu;
         this._menuView = view;
