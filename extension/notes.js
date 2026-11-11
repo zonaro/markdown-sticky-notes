@@ -45,16 +45,12 @@ import {
     PALETTE,
     SWATCH_ORDER,
     clamp,
-    decodeStore,
     emptyStore,
-    encodeStore,
     freshOrigin,
     normalizeSize,
-    trashLabel,
-    trimTrash,
-    welcomeNote,
 } from './model.js';
 import {DesktopLayer} from './layer.js';
+import {NoteFiles} from './filesync.js';
 import {NoteRibbon} from './ribbon.js';
 
 const BUTTON_PRIMARY = 1;
@@ -111,8 +107,8 @@ export class NoteBoard {
         this._textDrag = null;
         this._focused = null;
         this._overview = Main.overview.visible;
-        this._path = GLib.build_filenamev([GLib.get_user_data_dir(), 'sticky-notes', 'notes.json']);
-        this._cancellable = new Gio.Cancellable();
+        this._byFilename = new Map();
+        this._files = null;
         this._ink = color4(50 / 255, 47 / 255, 56 / 255, 1);
         this._select = color4(50 / 255, 47 / 255, 56 / 255, 0.16);
         this._desktop = new DesktopLayer();
@@ -136,8 +132,6 @@ export class NoteBoard {
     }
 
     destroy() {
-        this._cancellable.cancel();
-        this._cancellable = null;
         this._queue = [];
         if (this._saveId) {
             GLib.Source.remove(this._saveId);
@@ -145,6 +139,7 @@ export class NoteBoard {
         }
         this._closeMenu();
         this._menuManager = null;
+        this._files?.stop();
         if (this._ready)
             this._write();
         this._finishDrag();
@@ -155,6 +150,8 @@ export class NoteBoard {
         global.workspace_manager.disconnectObject(this);
         for (const view of [...this._views.values()])
             this._drop(view);
+        this._byFilename.clear();
+        this._files = null;
         this._desktop.destroy();
         this._desktop = null;
         this._layer = null;
@@ -172,18 +169,6 @@ export class NoteBoard {
         this._whenReady(() => this._deleteAll());
     }
 
-    emptyTrash() {
-        this._whenReady(() => this._emptyTrash());
-    }
-
-    restore(id) {
-        this._whenReady(() => this._restore(id));
-    }
-
-    restoreAll() {
-        this._whenReady(() => this._restoreAll());
-    }
-
     applySettings() {
         this._whenReady(() => {
             this._clampAll();
@@ -195,15 +180,9 @@ export class NoteBoard {
     }
 
     status() {
-        const trash = [];
-        for (let i = this._store.trash.length - 1; i >= 0; i--) {
-            const note = this._store.trash[i];
-            trash.push({id: note.id, label: trashLabel(note.text)});
-        }
         return {
             hidden: this._store.hidden === true,
             notes: this._store.notes.length,
-            trash,
         };
     }
 
@@ -222,60 +201,93 @@ export class NoteBoard {
     }
 
     _load() {
-        const file = Gio.File.new_for_path(this._path);
-        file.load_contents_async(this._cancellable, (_file, res) => {
-            let contents;
-            try {
-                [, contents] = file.load_contents_finish(res);
-            } catch (error) {
-                if (error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                    return;
-                const missing = error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND);
-                if (!missing)
-                    console.warn(`Sticky Notes: cannot read ${this._path}: ${error.message}`);
-                this._useStore(null, !missing);
-                return;
-            }
-            this._useStore(decodeStore(contents, this._workspace()), true);
-        });
-    }
-
-    _useStore(store, existed) {
-        if (!store)
-            store = emptyStore();
-        const welcome = existed ? null : welcomeNote(this._workAreas(), store.next_id, this._workspace());
-        if (welcome) {
-            store.next_id += 1;
-            store.notes.push(welcome);
-        }
-        for (const note of store.notes)
-            this._clampNote(note);
-        this._store = store;
         this._ready = true;
-        for (const note of store.notes)
-            this._mount(note, false);
+        this._files = new NoteFiles(
+            (filename, document) => this._upsertFile(filename, document),
+            filename => this._removeFile(filename));
+        this._files.start();
         this._applyVisibility();
-        if (welcome) {
-            this._focus(this._views.get(welcome.id), false);
-            this._write();
-        }
         this._flushQueue();
     }
 
+    _defaultNote(filename) {
+        const w = this._settings.get_int('note-width');
+        const h = this._settings.get_int('note-height');
+        const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
+        const [x, y] = freshOrigin(obstacles, this._workAreas(), w, h, null, null);
+        return {
+            id: this._store.next_id++,
+            filename, x, y, w, h, expanded_h: h,
+            color: this._store.notes.length % PALETTE.length,
+            size: 13, collapsed: false, locked: false, pinned: false,
+            text: '', spans: [], sizes: [], workspace: this._workspace(),
+        };
+    }
+
+    _upsertFile(filename, document) {
+        const view = this._byFilename.get(filename);
+        const note = view ? view.note : this._defaultNote(filename);
+        const metadata = document.metadata;
+        if (!view && Number.isInteger(metadata.id) && metadata.id > 0 &&
+            !this._views.has(metadata.id)) {
+            note.id = metadata.id;
+        }
+        if (!view)
+            this._store.next_id = Math.max(this._store.next_id, note.id + 1);
+        for (const key of ['x', 'y', 'w', 'h', 'expanded_h', 'color', 'size', 'workspace']) {
+            if (Number.isInteger(metadata[key]))
+                note[key] = metadata[key];
+        }
+        for (const key of ['locked', 'pinned']) {
+            if (typeof metadata[key] === 'boolean')
+                note[key] = metadata[key];
+        }
+        note.color = ((note.color % PALETTE.length) + PALETTE.length) % PALETTE.length;
+        note.size = normalizeSize(note.size);
+        note.spans = Array.isArray(metadata.spans) ? metadata.spans : [];
+        note.sizes = Array.isArray(metadata.sizes) ? metadata.sizes : [];
+        note.text = document.body;
+        this._clampNote(note);
+        if (view) {
+            view.loading = true;
+            try {
+                view.text.text = note.text;
+                this._moveToLayer(view);
+                this._layout(view);
+                this._paint(view);
+                this._applyVisibility();
+            } finally {
+                view.loading = false;
+            }
+        } else {
+            this._store.notes.push(note);
+            this._mount(note, false);
+        }
+        // External files without the extension's metadata acquire defaults.
+        if (!document.hasFrontmatter || !Number.isInteger(metadata.id))
+            this._scheduleSave();
+    }
+
+    _removeFile(filename) {
+        const view = this._byFilename.get(filename);
+        if (!view)
+            return;
+        const index = this._store.notes.indexOf(view.note);
+        if (index >= 0)
+            this._store.notes.splice(index, 1);
+        this._drop(view);
+    }
+
     _write() {
-        GLib.mkdir_with_parents(GLib.path_get_dirname(this._path), 0o755);
-        const bytes = new TextEncoder().encode(`${JSON.stringify(encodeStore(this._store), null, 2)}\n`);
-        Gio.File.new_for_path(this._path).replace_contents(
-            bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+        for (const note of this._store.notes)
+            this._files?.save(note);
     }
 
     _scheduleSave() {
         if (!this._ready)
             return;
-        if (this._saveId) {
+        if (this._saveId)
             GLib.Source.remove(this._saveId);
-            this._saveId = 0;
-        }
         this._saveId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
             this._saveId = 0;
             this._write();
@@ -373,6 +385,8 @@ export class NoteBoard {
         this._store.next_id += 1;
         const note = {
             id,
+            filename: this._files.newFilename(id),
+            pinned: false,
             x,
             y,
             w,
@@ -402,70 +416,23 @@ export class NoteBoard {
     }
 
     _delete(view) {
-        const index = this._store.notes.findIndex(note => note.id === view.note.id);
-        if (index < 0)
+        if (!this._files.remove(view.note.filename))
             return;
-        const [note] = this._store.notes.splice(index, 1);
-        this._store.trash.push(note);
-        trimTrash(this._store);
+        const index = this._store.notes.indexOf(view.note);
+        if (index >= 0)
+            this._store.notes.splice(index, 1);
         this._drop(view);
-        this._scheduleSave();
     }
 
     _deleteAll() {
-        const notes = this._store.notes.splice(0);
-        for (const note of notes)
-            this._store.trash.push(note);
-        trimTrash(this._store);
         for (const view of [...this._views.values()])
-            this._drop(view);
-        this._scheduleSave();
-    }
-
-    _emptyTrash() {
-        this._store.trash = [];
-        this._scheduleSave();
-    }
-
-    _restore(id) {
-        const index = this._store.trash.findIndex(note => note.id === id);
-        if (index < 0)
-            return;
-        const [note] = this._store.trash.splice(index, 1);
-        this._clampNote(note);
-        note.workspace = this._workspace();
-        this._store.notes.push(note);
-        if (this._store.hidden)
-            this._store.hidden = false;
-        if (this._overview)
-            Main.overview.hide();
-        this._mount(note, true);
-        this._scheduleSave();
-    }
-
-    _restoreAll() {
-        const notes = this._store.trash.splice(0);
-        if (!notes.length)
-            return;
-        if (this._store.hidden)
-            this._store.hidden = false;
-        if (this._overview)
-            Main.overview.hide();
-        let last = null;
-        for (const note of notes) {
-            this._clampNote(note);
-            note.workspace = this._workspace();
-            this._store.notes.push(note);
-            last = this._mount(note, false);
-        }
-        if (last)
-            this._focusLater(last);
-        this._scheduleSave();
+            this._delete(view);
     }
 
     _mount(note, focus) {
         const view = this._build(note);
         this._views.set(note.id, view);
+        this._byFilename.set(note.filename, view);
         this._desktop.seat();
         this._layer.add_child(view.frame);
         this._layout(view);
@@ -718,6 +685,7 @@ export class NoteBoard {
             controller.disconnectObject(this);
         view.ribbon.destroy();
         this._views.delete(view.note.id);
+        this._byFilename.delete(view.note.filename);
         view.frame.destroy();
     }
 
@@ -1012,6 +980,8 @@ export class NoteBoard {
     }
 
     _onText(view) {
+        if (view.loading)
+            return;
         if (view.rewrite)
             return;
         const next = view.text.text;
@@ -1360,6 +1330,8 @@ export class NoteBoard {
         this._store.next_id += 1;
         const note = {
             id,
+            filename: this._files.newFilename(id),
+            pinned: source.pinned === true,
             x,
             y,
             w: source.w,
