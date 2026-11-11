@@ -15,6 +15,12 @@ jobs:
         run: npm run lint:syntax
       - name: Run Markdown/frontmatter tests
         run: npm test
+      - name: Install GJS for the filesystem integration test
+        run: sudo apt-get update && sudo apt-get install -y gjs libglib2.0-bin
+      - name: Verify folder watcher, rename, conflict detection, deletion
+        run: gjs -m tests/filesync-gjs.test.js
+      - name: Verify a second installation backs up code but never notes
+        run: bash tests/install.test.sh
       - name: Validate extension metadata
         run: |
           python3 -m json.tool extension/metadata.json >/dev/null
