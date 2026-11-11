@@ -158,3 +158,38 @@ export class DesktopLayer {
         this.actor.set_size(global.stage.width, global.stage.height);
     }
 }
+
+// Notes explicitly pinned by the user live above ordinary application windows.
+// This is separate from the desktop layer, so unfixed notes keep upstream's
+// desktop behavior. It is non-reactive: only its note actors accept input.
+export class PinnedLayer {
+    constructor() {
+        this.actor = new St.Widget({
+            name: 'sticky-notes-pinned',
+            reactive: false,
+            x: 0,
+            y: 0,
+        });
+        this.actor.set_no_layout(true);
+        this._syncSize();
+        Main.layoutManager.addChrome(this.actor, {
+            affectsStruts: false,
+            trackFullscreen: true,
+        });
+        global.stage.connectObject(
+            'notify::width', () => this._syncSize(),
+            'notify::height', () => this._syncSize(),
+            this);
+    }
+
+    _syncSize() {
+        this.actor.set_size(global.stage.width, global.stage.height);
+    }
+
+    destroy() {
+        global.stage.disconnectObject(this);
+        Main.layoutManager.removeChrome(this.actor);
+        this.actor.destroy();
+        this.actor = null;
+    }
+}
