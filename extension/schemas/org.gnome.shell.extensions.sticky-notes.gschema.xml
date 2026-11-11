@@ -9,6 +9,10 @@
       <default>["&lt;Control&gt;&lt;Super&gt;h"]</default>
       <summary>Show or hide every note</summary>
     </key>
+    <key name="notes-hidden" type="b">
+      <default>false</default>
+      <summary>Global visibility of sticky notes between GNOME sessions</summary>
+    </key>
     <key name="stick" type="b">
       <default>true</default>
       <summary>Show notes on all workspaces</summary>
