@@ -172,8 +172,10 @@ export class PinnedLayer {
         });
         this.actor.set_no_layout(true);
         this._syncSize();
+        // GNOME Shell 50/51 only accept affectsStruts and trackFullscreen.
+        // This root is non-reactive; its reactive child note frames receive
+        // pointer input without any explicit input-region registration.
         Main.layoutManager.addChrome(this.actor, {
-            affectsInputRegion: false,
             affectsStruts: false,
             trackFullscreen: true,
         });
