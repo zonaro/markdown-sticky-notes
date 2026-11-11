@@ -27,7 +27,7 @@ test('preview never renders YAML if given only parsed Markdown body', () => {
 });
 
 test('code fences render as monospace while escaping angle brackets', () => {
-    const out = renderMarkdown('\\`\\`\\`js\nconst a = "<b>";\n\\`\\`\\`');
+    const out = renderMarkdown('\`\`\`js\nconst a = "<b>";\n\`\`\`');
     assert.match(out, /<tt>const a/);
     assert.match(out, /&lt;b&gt;/);
 });
