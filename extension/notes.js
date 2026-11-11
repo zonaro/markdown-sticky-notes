@@ -208,6 +208,7 @@ export class NoteBoard {
     }
 
     _load() {
+        this._store.hidden = this._settings.get_boolean('notes-hidden');
         this._ready = true;
         this._files = new NoteFiles(
             (filename, document) => this._upsertFile(filename, document),
@@ -380,6 +381,7 @@ export class NoteBoard {
             Main.overview.hide();
         if (this._store.hidden) {
             this._store.hidden = false;
+            this._settings.set_boolean('notes-hidden', false);
             this._applyVisibility();
         }
         const [maxW, maxH] = this._limits();
@@ -417,6 +419,7 @@ export class NoteBoard {
 
     _toggle() {
         this._store.hidden = !this._store.hidden;
+        this._settings.set_boolean('notes-hidden', this._store.hidden);
         if (this._store.hidden)
             this._blur();
         this._applyVisibility();
