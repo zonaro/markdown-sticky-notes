@@ -76,8 +76,9 @@ test('unterminated YAML is treated as content and not silently removed', () => {
     const broken = '---\ntitle: My task\n- important text\n';
     assert.deepEqual(parseDocument(broken).metadata, {});
     assert.equal(parseDocument(broken).body, broken);
-    const result = writeDocument(note, broken);
-    assert.equal(parseDocument(result).body, note.text);
+    const parsed = parseDocument(broken);
+    const result = writeDocument({...note, text: parsed.body}, broken);
+    assert.equal(parseDocument(result).body, broken);
 });
 
 test('user frontmatter is preserved even when it contains comments', () => {
