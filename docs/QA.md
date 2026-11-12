@@ -42,6 +42,17 @@
 - [ ] Verify no `.state`, `notes.json`, legacy import or migration is performed.
 - [ ] Reinstall and verify the previous extension is backed up while `~/notes/` remains intact.
 
+## TODO note (todo.txt)
+- [ ] With `~/todo.txt` present, the note appears; external edits update the note and vice versa, without duplicates.
+- [ ] Clicking the checkbox glyph in the editor toggles `x YYYY-MM-DD` and flips ☐/☑; clicking a task row in **Preview tasks** does the same; priority, creation date, projects, contexts and tags survive both.
+- [ ] Enter on a task line inserts `YYYY-MM-DD <today>` scaffold; Enter on the scaffold clears it; Backspace at the end of a scaffold peels the date first, then the checkbox.
+- [ ] Completing a task with `rec:daily|weekly|monthly` inserts the next occurrence right below, with `due:` (or `t:`) shifted and the creation date set to today.
+- [ ] **Sort tasks** (right-click menu) orders active tasks by priority then creation date; completed tasks move to the end; blank lines keep their position; the file remains valid todo.txt.
+- [ ] Restart the session; the TODO note's position, size, color, font size, pin/lock and workspace survive via GSettings (`todo-layout`); `~/todo.txt` never gains a frontmatter header.
+- [ ] Set `todo-file` to empty in Preferences: the TODO note disappears; set a custom path: it appears there (with `~` resolving to the home directory); clearing the setting again removes the note without touching the file.
+- [ ] Delete `~/todo.txt` externally: the note disappears; **TODO note** in the top-bar menu recreates an empty file and reopens the note; the note cannot be deleted or duplicated from inside the extension; **Delete all notes** leaves it untouched.
+- [ ] Check the file with `todo.sh ls` / `todo.sh do` if installed: output matches expectations; no ☐/☑ glyph characters ever appear in the file.
+
 ## Diagnostics
 Run these commands and attach the output only if there is a failure:
 

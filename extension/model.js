@@ -52,6 +52,10 @@ export function emptyStore() {
     return {hidden: false, next_id: 1, notes: []};
 }
 
+// Fixed identity of the TODO note. It is not parsed from frontmatter; the
+// raw todo.txt file and GSettings own its state.
+export const TODO_ID = -1;
+
 export function normalizeSize(size) {
     const value = Number(size);
     if (value === 0)

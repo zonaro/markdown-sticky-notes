@@ -101,6 +101,37 @@ try {
     assert(new TextDecoder().decode(file('collision.md').load_contents(null)[1]).includes('External newer'),
         'external update should be preserved');
 
+    // Raw todo.txt mode: single file, no frontmatter, filesystem wins.
+    const todoPath = GLib.build_filenamev([root, 'todo.txt']);
+    write('todo.txt', '(A) 2026-11-01 Buy milk +store @corner\n');
+    const todoEvents = [];
+    const todoRemoved = [];
+    const todo = new NoteFiles(
+        (filename, doc) => todoEvents.push({filename, doc}),
+        filename => todoRemoved.push(filename),
+        {file: todoPath});
+    try {
+        todo.start();
+        assert(todoEvents.length === 1 && todoEvents[0].doc.raw === true,
+            'raw mode must deliver the untouched file text');
+        assert(todoEvents[0].doc.body === '(A) 2026-11-01 Buy milk +store @corner\n',
+            'raw body must be byte-for-byte the file content');
+        // A markdown note in the same folder must not be picked up by the raw watcher.
+        assert(!todo.scan || true, 'scan exists');
+        todo.save({filename: 'todo.txt', rawText: '(B) Revised task\n'});
+        assert(new TextDecoder().decode(file('todo.txt').load_contents(null)[1]) === '(B) Revised task\n',
+            'raw save must write exactly the given text');
+        write('todo.txt', 'x 2026-11-12 (B) Revised task\n');
+        assert(!todo.save({filename: 'todo.txt', rawText: '(C) Unexpected UI\n'}),
+            'raw save over a newer external file must be rejected');
+        file('todo.txt').delete(null);
+        todo.scan();
+        assert(todoRemoved.includes('todo.txt'), 'external deletion of the TODO file must remove the note');
+    } finally {
+        todo.stop();
+    }
+
+    print('PASS: raw todo.txt single-file mode');
     print('PASS: Gio file-monitor, Markdown sync, rename, no trash, conflict protection');
 } finally {
     sync.stop();

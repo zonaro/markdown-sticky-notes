@@ -38,6 +38,9 @@ export class NotesMenu {
                 Gio.File.new_for_path(GLib.build_filenamev([GLib.get_home_dir(), 'notes'])).get_uri(), null);
         });
         menu.addMenuItem(openFolder);
+        const todoNote = new PopupMenu.PopupImageMenuItem(t('TODO note'), 'task-due-symbolic');
+        todoNote.connect('activate', () => this._board.openOrCreateTodo());
+        menu.addMenuItem(todoNote);
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 

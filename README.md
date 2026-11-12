@@ -7,6 +7,7 @@ A RedClaw GNOME Shell extension rebuilt from [johanan-23/gnome-sticky-notes](htt
 - Desktop sticky notes with pastel colors, Markdown edit/preview mode, resizing and drag positioning.
 - **Pin above windows** / **Unpin note** in each note's right-click menu. Pinned notes are hosted by a separate GNOME Shell chrome layer. Unpinned notes stay below ordinary windows, like the upstream extension. New notes are created pinned by default; the **Pin new notes above windows** preference (Desktop group) turns this off.
 - Create, edit, rename or delete Markdown files in `~/notes/`, and GNOME's notes appear, update or disappear automatically. Only direct `.md` and `.markdown` files are watched, not subdirectories.
+- **TODO note** mirrored to a pure [todo.txt](https://todotxt.in/blog/todo-txt-format-complete-guide) file (default `~/todo.txt`): click-to-complete, recurrence and sorting. See [TODO note](#todo-note-todotxt).
 - The opposite direction also works: new note = new file; edit = update file; delete = **permanently delete file**.
 - No recycle bin, no `notes.json` or `.state` files.
 - The Markdown body is normal UTF-8 text. Layout, colors, lock and pin state are embedded in namespaced YAML frontmatter. Unrelated frontmatter fields are preserved.
@@ -86,6 +87,22 @@ This is an ordinary Markdown file.
 Existing Markdown files without frontmatter are accepted and receive default note metadata when the extension saves them. Earlier `gnome-notes-` geometry keys are read for compatibility. Changes are debounced, and self-generated file-monitor notifications are ignored by content comparison. If the file is modified externally just before an extension save, the file has priority to prevent accidental overwrite.
 
 **Deletion is permanent inside this extension.** Consider syncing/backing up `~/notes/` if you need revision history or recovery. The extension does not delete notes when the directory cannot be scanned.
+
+## TODO note (todo.txt)
+
+The extension mirrors a plain [todo.txt](https://todotxt.in/blog/todo-txt-format-complete-guide) file as a special desktop note dedicated to tasks. The file stays a **pure** todo.txt — no YAML frontmatter, no extension metadata — readable and writable by any compatible tool, such as `todo.sh`.
+
+- Open or create it from the top-bar menu: **TODO note**. The file is created empty on first use.
+- Configure it in **Preferences → TODO notes** with the `todo-file` setting. It accepts `~/todo.txt` (default), absolute paths, or paths relative to the home directory. **An empty value disables the TODO note.**
+- **Syntax**: lines follow the todo.txt format — `(A)`–`(Z)` priority, optional `YYYY-MM-DD` creation date (after the priority), `x YYYY-MM-DD ` completion prefix, `+project`, `@context`, and `key:value` tags such as `due:YYYY-MM-DD`, `t:YYYY-MM-DD`, `rec:daily|weekly|monthly` and `est:2h`.
+- **Toggle a task** (`x YYYY-MM-DD` is added or removed for you) by clicking the checkbox glyph in the editor, or by clicking the task row in **Preview tasks**. Completed tasks keep their priority, dates and tags.
+- **Recurrence**: completing a task with `rec:daily|weekly|monthly` inserts the next occurrence right below it: `due:` (or `t:`) is shifted forward and the new task is dated today.
+- **Sort tasks** (right-click menu) reorders the file in place: active tasks by priority then creation date, completed tasks at the end, blank lines where they are.
+- **Layout and appearance** (position, size, color, font size, pin/lock, workspace) live in **GSettings** under `todo-layout` — never in the file — and survive session restarts.
+- **Cannot be deleted or duplicated from the extension.** Delete the file yourself to close the note; **TODO note** in the menu recreates it. External edits update the note and vice versa; the filesystem wins on conflicts.
+- `.txt` files in `~/notes/` still do not become notes.
+
+The editor scaffolds new tasks with today's date when you press Enter on a task line; Enter on an empty scaffold clears it. Backspace at the end of a scaffold peels the date, then the checkbox. Task lines pasted from elsewhere work like any other task for the preview toggle; inline checkbox clicks exist on lines loaded from the file or scaffolded with Enter.
 
 ## Development
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {renderMarkdown} from '../extension/markdown-preview.js';
+import {renderMarkdown, renderTodo} from '../extension/markdown-preview.js';
 
 test('renders headings, bold, italics and task list markers', () => {
     const out = renderMarkdown('# Title\n**Bold** and *italic*\n- [x] Checked\n- [ ] Open');
@@ -93,4 +93,44 @@ test('a pipe line without a following separator renders as plain text', () => {
     const out = renderMarkdown('a | b');
     assert.doesNotMatch(out, /┌/);
     assert.match(out, /a \| b/);
+});
+
+test('todo preview renders glyph, priority badge and escaped description', () => {
+    const {markup} = renderTodo('(A) 2026-11-01 Call <Mom> +family @phone', '2026-11-12');
+    assert.match(markup, /☐/);
+    assert.match(markup, /A/);
+    assert.match(markup, /&lt;Mom&gt;/);
+    assert.match(markup, /\+family/);
+    assert.match(markup, /@phone/);
+});
+
+test('todo preview strikes completed tasks and shows a checked box', () => {
+    const {markup} = renderTodo('x 2026-11-12 (A) 2026-11-01 Call mom', '2026-11-12');
+    assert.match(markup, /☑/);
+    assert.match(markup, /<s>/);
+});
+
+test('todo preview colors an overdue due date red', () => {
+    const {markup} = renderTodo('Pay taxes due:2026-11-01', '2026-11-12');
+    assert.match(markup, /#c01c28/);
+    const future = renderTodo('Pay taxes due:2026-12-01', '2026-11-12').markup;
+    assert.doesNotMatch(future, /#c01c28/);
+});
+
+test('todo preview maps every source line to its markup offset', () => {
+    const source = 'First task\n\nx 2026-11-12 Second task\n(C) Third due:2026-11-20';
+    const {markup, offsets} = renderTodo(source, '2026-11-12');
+    const lines = markup.split('\n');
+    assert.equal(offsets.length, 4);
+    let bytes = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+        assert.equal(offsets[i], bytes);
+        bytes += Buffer.byteLength(lines[i]) + 1;
+    }
+});
+
+test('todo preview accepts display glyph prefixes and ignores them', () => {
+    const withGlyphs = renderTodo('☐\uFE0E 2026-11-12 Buy milk', '2026-11-12').markup;
+    const without = renderTodo('2026-11-12 Buy milk', '2026-11-12').markup;
+    assert.equal(withGlyphs, without);
 });

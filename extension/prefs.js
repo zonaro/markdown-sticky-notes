@@ -42,6 +42,27 @@ export default class StickyNotesPreferences extends ExtensionPreferences {
         ));
         page.add(behavior);
 
+        const todo = new Adw.PreferencesGroup({
+            title: t('TODO notes'),
+            description: t('A desktop note mirrored to a pure todo.txt file. Layout and appearance live in GSettings, never in the file.'),
+        });
+        const todoPath = new Adw.EntryRow({
+            title: t('TODO file'),
+        });
+        todoPath.text = settings.get_string('todo-file');
+        todoPath.connect('changed', () => {
+            settings.set_string('todo-file', todoPath.text.trim());
+        });
+        todo.add(todoPath);
+        todo.add(new Adw.ActionRow({
+            title: t('Paths starting with ~/ resolve against your home directory. Leave empty to disable the TODO note.'),
+        }));
+        todo.add(new Adw.ActionRow({
+            title: t('Delete all notes keeps the TODO note'),
+            subtitle: t('Remove the todo.txt file itself to close the note.'),
+        }));
+        page.add(todo);
+
         const size = new Adw.PreferencesGroup({
             title: t('New notes'),
             description: t('Size used by the top-bar menu, the note menu, and the shortcuts. A new note stays inside the size limit.'),

@@ -33,6 +33,13 @@ function decode(value) {
     }
 }
 
+// A raw document carries the text verbatim: no frontmatter, no metadata.
+// Used for the todo.txt file, which must stay byte-compatible with other
+// todo.txt tools.
+export function parseRawDocument(source) {
+    return {body: source, metadata: {}, header: [], hasFrontmatter: false, raw: true};
+}
+
 export function parseDocument(source) {
     let body = source;
     let header = [];

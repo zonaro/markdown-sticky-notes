@@ -62,6 +62,7 @@ export default class StickyNotesExtension extends Extension {
     _watchSettings() {
         for (const key of BEHAVIOR_KEYS)
             this._settings.connectObject(`changed::${key}`, () => this._board.applySettings(), this);
+        this._settings.connectObject('changed::todo-file', () => this._board.reloadTodoFile(), this);
         for (const key of ['new-note', 'toggle-notes'])
             this._settings.connectObject(`changed::${key}`, () => this._rebindKeys(), this);
     }

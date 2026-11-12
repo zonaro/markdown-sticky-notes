@@ -1,6 +1,9 @@
 // A deliberately small, safe Pango-markup preview for common Markdown.
 // All user content is escaped; markup is generated only by our own renderer.
 // The editable source remains the original Markdown string.
+import {utf8Length} from './format.js';
+import {parseTodoLine, dueStatus, splitDisplayLine, toDateString} from './todo.js';
+
 function escapePango(text) {
     return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -179,6 +182,82 @@ function renderLine(line) {
     if (ordered)
         return `${escapePango(ordered[1])}${ordered[2]}.  ${inline(ordered[3])}`;
     return inline(line);
+}
+
+// ---- todo.txt preview ----
+const TAG_COLOR = '#5e5c64';
+const DUE_COLORS = {overdue: '#c01c28', today: '#e5a50a', future: '#3584e4'};
+
+function priorityColor(priority) {
+    if (priority === 'A')
+        return '#e01b24';
+    if (priority === 'B')
+        return '#ff7800';
+    if (priority === 'C')
+        return '#e5a50a';
+    if (priority <= 'F')
+        return '#3584e4';
+    return '#5e5c64';
+}
+
+function todoToken(token, done, today) {
+    const escaped = escapePango(token);
+    if (done)
+        return `<s>${escaped}</s>`;
+    if (token.startsWith('+') && token.length > 1)
+        return `<span foreground="#26a269"><b>${escaped}</b></span>`;
+    if (token.startsWith('@') && token.length > 1)
+        return `<span foreground="#1c71d8"><b>${escaped}</b></span>`;
+    const tag = token.match(/^([A-Za-z][A-Za-z0-9_-]*):([^\s]+)$/);
+    if (tag) {
+        const key = tag[1].toLowerCase();
+        if (key === 'due') {
+            const status = dueStatus(tag[2], today);
+            const color = DUE_COLORS[status] ?? TAG_COLOR;
+            return `<span foreground="${color}"><b>${escaped}</b></span>`;
+        }
+        if (key === 'rec')
+            return `<span foreground="#9141ac">${escaped}</span>`;
+        return `<span foreground="${TAG_COLOR}">${escaped}</span>`;
+    }
+    return escaped;
+}
+
+function renderTodoLine(line, today) {
+    const {raw} = splitDisplayLine(line);
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return '';
+    const parsed = parseTodoLine(raw);
+    if (!parsed)
+        return escapePango(raw);
+    const parts = [];
+    parts.push(parsed.completed ? '<span foreground="#2ec27e">☑</span>' : '☐');
+    if (parsed.priority)
+        parts.push(`<span background="${priorityColor(parsed.priority)}" foreground="#ffffff" weight="bold"> ${parsed.priority} </span>`);
+    if (parsed.creationDate)
+        parts.push(`<span foreground="${TAG_COLOR}">${escapePango(parsed.creationDate)}</span>`);
+    const description = parsed.description.split(/\s+/).filter(Boolean)
+        .map(token => todoToken(token, parsed.completed, today))
+        .join(' ');
+    parts.push(description);
+    return parts.join(' ');
+}
+
+// One output line per source line, plus the byte offset of each output line
+// inside the markup. The caller uses the offsets to map a pointer position
+// back to a source line.
+export function renderTodo(source, today = toDateString(new Date())) {
+    const out = [];
+    const offsets = [];
+    let bytes = 0;
+    for (const line of source.replace(/\r\n/g, '\n').split('\n')) {
+        offsets.push(bytes);
+        const rendered = renderTodoLine(line, today);
+        out.push(rendered);
+        bytes += utf8Length(rendered) + 1;
+    }
+    return {markup: out.join('\n'), offsets, end: bytes};
 }
 
 export function renderMarkdown(source) {

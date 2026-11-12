@@ -44,15 +44,30 @@ import {
     MIN_W,
     PALETTE,
     SWATCH_ORDER,
+    TODO_ID,
     clamp,
     emptyStore,
     freshOrigin,
     normalizeSize,
 } from './model.js';
 import {DesktopLayer, PinnedLayer} from './layer.js';
-import {NoteFiles} from './filesync.js';
+import {NoteFiles, expandNotePath} from './filesync.js';
 import {t} from './i18n.js';
-import {renderMarkdown} from './markdown-preview.js';
+import {renderMarkdown, renderTodo} from './markdown-preview.js';
+import {
+    displayLine,
+    parseTodoLine,
+    recurrenceNextLine,
+    sortTodoText,
+    splitDisplayLine,
+    stripTodoGlyphs,
+    toDateString,
+    toggleTodoDisplayLine,
+    todoBackspace,
+    todoContinuation,
+    todoEndOfLine,
+    withTodoGlyphs,
+} from './todo.js';
 import {NoteRibbon} from './ribbon.js';
 
 const BUTTON_PRIMARY = 1;
@@ -111,6 +126,8 @@ export class NoteBoard {
         this._overview = Main.overview.visible;
         this._byFilename = new Map();
         this._files = null;
+        this._todoFile = null;
+        this._todoFiles = null;
         this._ink = color4(50 / 255, 47 / 255, 56 / 255, 1);
         this._select = color4(50 / 255, 47 / 255, 56 / 255, 0.16);
         this._desktop = new DesktopLayer();
@@ -143,6 +160,7 @@ export class NoteBoard {
         this._closeMenu();
         this._menuManager = null;
         this._files?.stop();
+        this._todoFiles?.stop();
         if (this._ready)
             this._write();
         this._finishDrag();
@@ -155,6 +173,8 @@ export class NoteBoard {
             this._drop(view);
         this._byFilename.clear();
         this._files = null;
+        this._todoFile = null;
+        this._todoFiles = null;
         this._desktop.destroy();
         this._pinnedLayer.destroy();
         this._desktop = null;
@@ -187,7 +207,7 @@ export class NoteBoard {
     status() {
         return {
             hidden: this._store.hidden === true,
-            notes: this._store.notes.length,
+            notes: this._store.notes.filter(note => note.kind !== 'todo').length,
         };
     }
 
@@ -212,8 +232,147 @@ export class NoteBoard {
             (filename, document) => this._upsertFile(filename, document),
             filename => this._removeFile(filename));
         this._files.start();
+        this._loadTodo();
         this._applyVisibility();
         this._flushQueue();
+    }
+    // The TODO file is a pure todo.txt watched on its own: no frontmatter
+    // is ever added to it, and its layout lives in GSettings.
+    _todoPath() {
+        return expandNotePath(this._settings.get_string('todo-file'));
+    }
+    _loadTodo() {
+        this._todoFile = this._todoPath();
+        if (!this._todoFile)
+            return;
+        this._todoFiles = new NoteFiles(
+            (filename, document) => this._upsertTodoFile(filename, document),
+            filename => this._removeFile(filename),
+            {file: this._todoFile});
+        this._todoFiles.start();
+    }
+    // Called when the todo-file setting changes.
+    reloadTodoFile() {
+        const previous = this._todoFile;
+        const next = this._todoPath();
+        if (previous === next && this._todoFiles)
+            return;
+        this._todoFiles?.stop();
+        this._todoFiles = null;
+        this._todoFile = null;
+        if (previous !== next)
+            this._removeTodoView();
+        this._loadTodo();
+    }
+    _removeTodoView() {
+        const view = [...this._views.values()].find(view => view.note.kind === 'todo');
+        if (!view)
+            return;
+        const index = this._store.notes.indexOf(view.note);
+        if (index >= 0)
+            this._store.notes.splice(index, 1);
+        this._drop(view);
+    }
+    _defaultTodoNote(filename) {
+        const w = this._settings.get_int('note-width');
+        const h = this._settings.get_int('note-height');
+        const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
+        const [x, y] = freshOrigin(obstacles, this._workAreas(), w, h, null, null);
+        const note = {
+            id: TODO_ID,
+            kind: 'todo',
+            filename,
+            x, y, w, h, expanded_h: h,
+            color: this._store.notes.length % PALETTE.length,
+            size: 13, collapsed: false, locked: false, pinned: false,
+            text: '', spans: [], sizes: [], workspace: this._workspace(),
+        };
+        try {
+            const stored = this._settings.get_string('todo-layout');
+            const layout = stored ? JSON.parse(stored) : null;
+            if (layout && typeof layout === 'object') {
+                for (const key of ['x', 'y', 'w', 'h', 'expanded_h', 'color', 'size', 'workspace'])
+                    if (Number.isInteger(layout[key]))
+                        note[key] = layout[key];
+                if (typeof layout.pinned === 'boolean')
+                    note.pinned = layout.pinned;
+                if (typeof layout.locked === 'boolean')
+                    note.locked = layout.locked;
+            }
+        } catch (error) {
+            console.warn(`Sticky Notes: ignoring invalid todo-layout: ${error}`);
+        }
+        note.color = ((note.color % PALETTE.length) + PALETTE.length) % PALETTE.length;
+        note.size = normalizeSize(note.size);
+        note.spans = [];
+        note.sizes = [];
+        return note;
+    }
+    _upsertTodoFile(filename, document) {
+        const view = this._byFilename.get(filename);
+        const note = view ? view.note : this._defaultTodoNote(filename);
+        note.kind = 'todo';
+        // The editor displays each task with a leading checkbox glyph; the
+        // glyph never reaches the file.
+        note.text = withTodoGlyphs(document.body);
+        this._clampNote(note);
+        if (view) {
+            view.loading = true;
+            try {
+                view.text.text = note.text;
+                this._refreshPreview(view);
+                this._moveToLayer(view);
+                this._layout(view);
+                this._paint(view);
+                this._applyVisibility();
+            } finally {
+                view.loading = false;
+            }
+        } else {
+            this._store.notes.push(note);
+            this._mount(note, false);
+        }
+    }
+    _saveTodoLayout(note) {
+        const layout = {
+            x: note.x, y: note.y, w: note.w, h: note.h, expanded_h: note.expanded_h,
+            color: note.color, size: normalizeSize(note.size), workspace: note.workspace,
+            pinned: note.pinned === true, locked: note.locked === true,
+        };
+        const encoded = JSON.stringify(layout);
+        if (encoded !== this._settings.get_string('todo-layout'))
+            this._settings.set_string('todo-layout', encoded);
+    }
+    // Create the file when missing, then show/focus the note. Bound to the
+    // panel menu entry.
+    openOrCreateTodo() {
+        if (this._overview)
+            Main.overview.hide();
+        if (this._store.hidden) {
+            this._store.hidden = false;
+            this._settings.set_boolean('notes-hidden', false);
+            this._applyVisibility();
+        }
+        if (!this._todoFile)
+            this.reloadTodoFile();
+        if (!this._todoFile) {
+            console.warn('Sticky Notes: TODO file is disabled; set a path in Preferences to use the TODO note');
+            return;
+        }
+        try {
+            const file = Gio.File.new_for_path(this._todoFile);
+            if (!file.query_exists(null)) {
+                file.replace_contents(new TextEncoder().encode(''), null, false,
+                    Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            }
+        } catch (error) {
+            console.error(`Sticky Notes: could not create ${this._todoFile}: ${error}`);
+            return;
+        }
+        this._todoFiles?.scan();
+        const view = this._byFilename.get(GLib.path_get_basename(this._todoFile));
+        if (view)
+            this._focus(view, true);
     }
 
     _defaultNote(filename) {
@@ -287,8 +446,14 @@ export class NoteBoard {
     }
 
     _write() {
-        for (const note of this._store.notes)
-            this._files?.save(note);
+        for (const note of this._store.notes) {
+            if (note.kind === 'todo') {
+                this._saveTodoLayout(note);
+                this._todoFiles?.save({filename: note.filename, rawText: stripTodoGlyphs(note.text)});
+            } else {
+                this._files?.save(note);
+            }
+        }
     }
 
     _scheduleSave() {
@@ -426,6 +591,10 @@ export class NoteBoard {
     }
 
     _delete(view) {
+        // The TODO note is never deleted by the extension: the file may be
+        // shared with other todo.txt tools. Deleting the file removes the note.
+        if (view.note.kind === 'todo')
+            return;
         if (!this._files.remove(view.note.filename))
             return;
         const index = this._store.notes.indexOf(view.note);
@@ -435,8 +604,10 @@ export class NoteBoard {
     }
 
     _deleteAll() {
-        for (const view of [...this._views.values()])
-            this._delete(view);
+        for (const view of [...this._views.values()]) {
+            if (view.note.kind !== 'todo')
+                this._delete(view);
+        }
     }
 
     _layerFor(note) {
@@ -602,15 +773,26 @@ export class NoteBoard {
         scroll.connectObject(
             'button-press-event', (_actor, event) => this._onBodyPress(view, event),
             this);
-        view.ribbon = new NoteRibbon({
-            onPointer: () => this._anchor(view),
-            onStyle: bit => this._toggleStyle(view, bit),
-            onList: kind => this._applyMarker(view, kind),
-            onTable: () => this._insertTable(view),
-            onSize: delta => this._stepTextSize(view, delta),
-            onKeep: () => this._keepTyping(view),
-        });
-        card.add_child(view.ribbon.actor);
+        if (note.kind === 'todo') {
+            preview.reactive = true;
+            preview.connectObject(
+                'button-press-event', (_actor, event) => this._onTodoPreviewPress(view, event),
+                'motion-event', (_actor, event) => this._onTodoPreviewMotion(view, event),
+                this);
+        }
+        if (note.kind === 'todo') {
+            view.ribbon = null;
+        } else {
+            view.ribbon = new NoteRibbon({
+                onPointer: () => this._anchor(view),
+                onStyle: bit => this._toggleStyle(view, bit),
+                onList: kind => this._applyMarker(view, kind),
+                onTable: () => this._insertTable(view),
+                onSize: delta => this._stepTextSize(view, delta),
+                onKeep: () => this._keepTyping(view),
+            });
+            card.add_child(view.ribbon.actor);
+        }
         grip.connectObject(
             'captured-event', (_actor, event) => this._onHandleEvent(view, 'move', grip, event),
             this);
@@ -920,7 +1102,11 @@ export class NoteBoard {
 
     _pressBox(view, event) {
         const start = this._boxAt(view, event);
-        const next = start < 0 ? null : toggleBoxAt(view.note.text, start);
+        if (start < 0)
+            return false;
+        if (view.note.kind === 'todo')
+            return this._toggleTodoAt(view, this._lineIndexAt(view.note.text, start));
+        const next = toggleBoxAt(view.note.text, start);
         if (next === null)
             return false;
         view.sizeHold = false;
@@ -929,7 +1115,101 @@ export class NoteBoard {
         this._commitText(view, next, cursor);
         return true;
     }
-
+    // Index of the line whose first character sits at offset in text.
+    _lineIndexAt(text, offset) {
+        let index = 0;
+        let seen = 0;
+        for (const line of text.split('\n')) {
+            if (seen === offset)
+                return index;
+            seen += Array.from(line).length + 1;
+            index += 1;
+        }
+        return Math.max(0, index - 1);
+    }
+    // Toggle one task line: flip the checkbox glyph and the x/date prefix.
+    // Completing a recurring task inserts its next occurrence right below.
+    _toggleTodoAt(view, lineIndex) {
+        const lines = view.note.text.split('\n');
+        const line = lines[lineIndex];
+        if (line === undefined)
+            return false;
+        const today = toDateString(new Date());
+        const toggled = toggleTodoDisplayLine(line, today);
+        if (toggled === null)
+            return false;
+        const {raw} = splitDisplayLine(line);
+        const before = parseTodoLine(raw);
+        const merged = [...lines];
+        merged[lineIndex] = toggled;
+        if (before && !before.completed) {
+            const next = recurrenceNextLine(before, today);
+            if (next)
+                merged.splice(lineIndex + 1, 0, displayLine(next, false));
+        }
+        view.sizeHold = false;
+        this._focus(view, false);
+        let cursor = 0;
+        for (let i = 0; i < lineIndex; i++)
+            cursor += Array.from(merged[i]).length + 1;
+        this._commitText(view, merged.join('\n'), cursor);
+        return true;
+    }
+    // Source line index under the pointer in the TODO preview, or -1. The
+    // rendered markup keeps one output line per source line, and the offsets
+    // table maps the start of each.
+    _todoPreviewLineAt(view, event) {
+        const info = view.todoPreview;
+        if (!info)
+            return -1;
+        const [sx, sy] = event.get_coords();
+        const [ok, x, y] = view.preview.transform_stage_point(sx, sy);
+        if (!ok)
+            return -1;
+        const withinX = x < 0 || x > view.preview.width ? -1 : 1;
+        if (withinX < 0)
+            return -1;
+        const text = view.preview.clutter_text;
+        const [ox, oy] = text.get_layout_offsets();
+        const layout = text.get_layout();
+        const localY = y - oy;
+        const offsets = info.offsets;
+        for (let i = 0; i < offsets.length; i++) {
+            const top = layout.index_to_pos(offsets[i]).y / Pango.SCALE;
+            const bottom = i + 1 < offsets.length
+                ? layout.index_to_pos(offsets[i + 1]).y / Pango.SCALE
+                : layout.index_to_pos(info.end).y / Pango.SCALE;
+            if (bottom <= top)
+                continue;
+            if (localY >= top && localY < bottom)
+                return i;
+        }
+        return -1;
+    }
+    _onTodoPreviewPress(view, event) {
+        if (!view.previewMode)
+            return Clutter.EVENT_PROPAGATE;
+        const button = event.get_button();
+        if (button === BUTTON_SECONDARY) {
+            this._openMenu(view);
+            return Clutter.EVENT_STOP;
+        }
+        if (button !== BUTTON_PRIMARY)
+            return Clutter.EVENT_PROPAGATE;
+        const index = this._todoPreviewLineAt(view, event);
+        if (index < 0)
+            return Clutter.EVENT_PROPAGATE;
+        return this._toggleTodoAt(view, index) ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+    }
+    _onTodoPreviewMotion(view, event) {
+        const index = this._todoPreviewLineAt(view, event);
+        const line = index >= 0 ? view.note.text.split('\n')[index] : '';
+        const {raw} = splitDisplayLine(line ?? '');
+        const cursor = raw.trim() ? Clutter.CursorType.POINTER : Clutter.CursorType.DEFAULT;
+        if (view.preview.clutter_text.cursor_type !== cursor)
+            view.preview.clutter_text.cursor_type = cursor;
+        return Clutter.EVENT_PROPAGATE;
+    }
     // Character offset of the line whose checkbox glyph is under the pointer,
     // or -1. Pango indexes bytes, the note text counts characters.
     _boxAt(view, event) {
@@ -978,7 +1258,10 @@ export class NoteBoard {
         });
         const text = view.text;
         if (text.cursor_position === text.selection_bound) {
-            const ended = endList(view.note.text, this._clampIndex(view, text.cursor_position));
+            const cursor = this._clampIndex(view, text.cursor_position);
+            const ended = view.note.kind === 'todo'
+                ? todoEndOfLine(view.note.text, cursor)
+                : endList(view.note.text, cursor);
             if (ended) {
                 this._commitText(view, ended.text, ended.cursor);
                 return true;
@@ -1007,7 +1290,11 @@ export class NoteBoard {
             return this._insertNewline(view) ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
         if (key === Clutter.KEY_BackSpace && !control && !view.note.locked &&
             view.text.cursor_position === view.text.selection_bound) {
-            const next = backspaceMarker(view.note.text, view.text.cursor_position);
+            const cursor = view.text.cursor_position < 0
+                ? Array.from(view.note.text).length
+                : view.text.cursor_position;
+            let next = view.note.kind === 'todo' ? todoBackspace(view.note.text, cursor) : null;
+            next ??= backspaceMarker(view.note.text, cursor);
             if (next) {
                 this._commitText(view, next.text, next.cursor);
                 return Clutter.EVENT_STOP;
@@ -1039,7 +1326,9 @@ export class NoteBoard {
             view.sizeHold ? view.pendingSize : null);
         const newLen = oldLen - edit.removed + edit.inserted;
         if (edit.inserted === 1 && edit.removed === 0 && Array.from(next)[edit.start] === '\n') {
-            const prefix = listContinuation(next, edit.start);
+            const prefix = view.note.kind === 'todo'
+                ? todoContinuation(next, edit.start, toDateString(new Date()))
+                : listContinuation(next, edit.start);
             if (prefix) {
                 const at = edit.start + 1;
                 const prefixChars = Array.from(prefix);
@@ -1096,6 +1385,8 @@ export class NoteBoard {
         view.rewrite = false;
         this._showAttrs(view);
         this._syncRibbon(view);
+        if (view.previewMode)
+            this._refreshPreview(view);
         this._scheduleSave();
     }
 
@@ -1205,7 +1496,7 @@ export class NoteBoard {
     }
 
     _syncRibbon(view) {
-        if (!view.ribbon.actor.get_parent())
+        if (!view.ribbon || !view.ribbon.actor.get_parent())
             return;
         const editing = view.editing && global.stage.get_key_focus() === view.text;
         const show = !view.note.locked && !view.previewMode && view.frame.visible && editing;
@@ -1356,6 +1647,8 @@ export class NoteBoard {
     }
 
     _duplicate(view) {
+        if (view.note.kind === 'todo')
+            return;
         const source = view.note;
         const areas = this._workAreas();
         const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
@@ -1394,13 +1687,26 @@ export class NoteBoard {
         this._scheduleSave();
     }
 
+    _sortTodo(view) {
+        const raw = stripTodoGlyphs(view.note.text);
+        const sorted = sortTodoText(raw);
+        if (sorted === raw)
+            return;
+        this._commitText(view, withTodoGlyphs(sorted), 0);
+    }
     _refreshPreview(view) {
         if (!view.previewMode)
             return;
         try {
-            view.preview.clutter_text.set_markup(renderMarkdown(view.note.text));
+            if (view.note.kind === 'todo') {
+                view.todoPreview = renderTodo(view.note.text, toDateString(new Date()));
+                view.preview.clutter_text.set_markup(view.todoPreview.markup);
+            } else {
+                view.todoPreview = null;
+                view.preview.clutter_text.set_markup(renderMarkdown(view.note.text));
+            }
         } catch (error) {
-            console.warn(`Sticky Notes: could not render Markdown preview: ${error}`);
+            console.warn(`Sticky Notes: could not render preview: ${error}`);
             view.preview.text = view.note.text;
         }
     }
@@ -1469,12 +1775,17 @@ export class NoteBoard {
         const later = fn => {
             this._menuThen = fn;
         };
+        const isTodo = view.note.kind === 'todo';
         menu.addAction(t('New note'), () => later(() => this._create(null)), 'document-new-symbolic');
-        menu.addAction(t('Duplicate'), () => later(() => this._duplicate(view)), 'view-dual-symbolic');
+        if (!isTodo)
+            menu.addAction(t('Duplicate'), () => later(() => this._duplicate(view)), 'view-dual-symbolic');
         menu.addAction(
-            t(view.previewMode ? 'Edit Markdown' : 'Preview Markdown'),
+            t(view.previewMode ? (isTodo ? 'Edit tasks' : 'Edit Markdown')
+                : (isTodo ? 'Preview tasks' : 'Preview Markdown')),
             () => later(() => this._togglePreview(view)),
             view.previewMode ? 'document-edit-symbolic' : 'document-preview-symbolic');
+        if (isTodo)
+            menu.addAction(t('Sort tasks'), () => later(() => this._sortTodo(view)), 'view-sort-descending-symbolic');
         menu.addAction(
             t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
             () => later(() => this._togglePin(view)),
@@ -1485,7 +1796,8 @@ export class NoteBoard {
             view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic');
         menu.addAction(t('Smaller text'), () => later(() => this._stepSize(view, -1)), 'zoom-out-symbolic');
         menu.addAction(t('Larger text'), () => later(() => this._stepSize(view, 1)), 'zoom-in-symbolic');
-        menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'edit-delete-symbolic');
+        if (!isTodo)
+            menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'edit-delete-symbolic');
 
         this._menu = menu;
         this._menuView = view;

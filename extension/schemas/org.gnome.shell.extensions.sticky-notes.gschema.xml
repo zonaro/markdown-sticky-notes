@@ -43,6 +43,16 @@
       <summary>Widest a note can be</summary>
       <description>About 48 characters at the normal text size. Can be raised up to 960.</description>
     </key>
+    <key name="todo-file" type="s">
+      <default>"~/todo.txt"</default>
+      <summary>Path of the todo.txt file mirrored as a TODO note</summary>
+      <description>Paths starting with ~/ resolve against the user home directory. An empty value disables the TODO note. The file is kept as a plain todo.txt; note appearance is stored in todo-layout.</description>
+    </key>
+    <key name="todo-layout" type="s">
+      <default>""</default>
+      <summary>Saved layout of the TODO note, as JSON</summary>
+      <description>Owned by the extension. Position, size, color, font size, pin/lock state and workspace of the TODO note. Leave empty to reset to defaults.</description>
+    </key>
     <key name="max-height" type="i">
       <default>460</default>
       <range min="180" max="1200"/>
