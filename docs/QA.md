@@ -17,6 +17,10 @@
 - [ ] Bullet, checkbox and numbered list buttons emit `- `, `- [ ] ` and `N. ` in the `.md`. Enter continues a list with the incremented number; Backspace on a marker removes only the marker; Enter on an empty item exits the list.
 - [ ] **Insert table** drops a 3×2 pipe-table skeleton at the caret (existing text is kept); **Preview Markdown** renders it with borders, a bold header and aligned columns.
 - [ ] Open a note saved by an older version (with `gnome-sticky-spans`); its visually styled text keeps rendering in the editor.
+- [ ] Type in a note, then Alt+Tab away: the note renders as preview. Click on another note; the unfocused one becomes preview. Escape also switches the focused note to preview.
+- [ ] Double-click the preview: editing mode returns with a usable caret. A single click does nothing. Locked notes do not re-enter editing via double-click.
+- [ ] The note menu keeps switching between **Edit Markdown** and **Preview Markdown**.
+- [ ] A note just created starts in edit mode and becomes preview only after losing focus.
 - [ ] Pin an individual note above app windows and unpin it; test focus, pointer clicks outside the note, and Alt+Tab.
 - [ ] With the **Pin new notes above windows** preference on (default) and off, create notes and confirm the layer placement; confirm existing notes keep their pin state.
 - [ ] Move between workspaces and test foreground/background ordering.
