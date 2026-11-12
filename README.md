@@ -4,7 +4,7 @@ A RedClaw GNOME Shell extension rebuilt from [johanan-23/gnome-sticky-notes](htt
 
 ## Features
 
-- Desktop sticky notes with pastel colors, Markdown edit/preview mode, resizing and drag positioning.
+- Desktop sticky notes with pastel colors, Markdown edit/preview mode, resizing and drag positioning. A note that loses focus switches to **Preview Markdown** automatically; double-click it or choose **Edit Markdown** from the menu to edit again.
 - **Pin above windows** / **Unpin note** in each note's right-click menu. Pinned notes are hosted by a separate GNOME Shell chrome layer. Unpinned notes stay below ordinary windows, like the upstream extension.
 - Create, edit, rename or delete Markdown files in `~/notes/`, and GNOME's notes appear, update or disappear automatically. Only direct `.md` and `.markdown` files are watched, not subdirectories.
 - The opposite direction also works: new note = new file; edit = update file; delete = **permanently delete file**.

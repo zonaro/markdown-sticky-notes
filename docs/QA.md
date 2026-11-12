@@ -12,6 +12,10 @@
 ## Shell UI
 - [ ] Create, edit, move, resize, duplicate, lock, recolor, hide/show and permanently delete a note.
 - [ ] Switch between **Edit Markdown** and **Preview Markdown**, checking headings, checklists, and that frontmatter is never shown as note content.
+- [ ] Type in a note, then Alt+Tab away: the note renders as preview. Click on another note; the unfocused one becomes preview. Escape also switches the focused note to preview.
+- [ ] Double-click the preview: editing mode returns with a usable caret. A single click does nothing. Locked notes do not re-enter editing via double-click.
+- [ ] The note menu keeps switching between **Edit Markdown** and **Preview Markdown**.
+- [ ] A note just created starts in edit mode and becomes preview only after losing focus.
 - [ ] Pin an individual note above app windows and unpin it; test focus, pointer clicks outside the note, and Alt+Tab.
 - [ ] Move between workspaces and test foreground/background ordering.
 - [ ] Restart the session and confirm text, position, size, color, lock/pin state and global visibility survive.

@@ -121,6 +121,9 @@ export class NoteBoard {
         global.stage.connectObject(
             'captured-event', (_stage, event) => this._onCaptured(event),
             this);
+        global.display.connectObject(
+            'notify::focus-window', () => this._onFocusWindow(),
+            this);
         Main.overview.connectObject(
             'showing', () => this._setOverview(true),
             'hidden', () => this._setOverview(false),
@@ -148,6 +151,7 @@ export class NoteBoard {
         this._finishDrag();
         this._finishTextDrag();
         global.stage.disconnectObject(this);
+        global.display.disconnectObject(this);
         Main.overview.disconnectObject(this);
         Main.layoutManager.disconnectObject(this);
         global.workspace_manager.disconnectObject(this);
@@ -353,6 +357,8 @@ export class NoteBoard {
 
     _setOverview(open) {
         this._overview = open;
+        if (open)
+            this._blur();
         this._applyVisibility();
     }
 
@@ -594,8 +600,24 @@ export class NoteBoard {
             rewriteId: 0,
             focusId: 0,
             newlineId: 0,
+            lastEditClick: 0,
         };
         editClick.connectObject('recognize', () => {
+            if (view.previewMode) {
+                // Double-click in the preview brings editing back. Locked
+                // notes stay in preview.
+                const now = GLib.get_monotonic_time();
+                if (view.lastEditClick && now - view.lastEditClick < 400 * 1000) {
+                    view.lastEditClick = 0;
+                    if (!view.note.locked)
+                        this._togglePreview(view);
+                } else {
+                    view.lastEditClick = now;
+                    // Single-clicking a preview blurs the note being edited.
+                    this._blur();
+                }
+                return;
+            }
             if (!view.note.locked)
                 this._focus(view, true);
         }, this);
@@ -635,6 +657,7 @@ export class NoteBoard {
             'key-focus-out', () => {
                 view.editing = false;
                 this._dropHold(view);
+                this._autoPreview(view);
                 this._syncRibbon(view);
             },
             'cursor-changed', () => this._syncRibbon(view),
@@ -749,12 +772,23 @@ export class NoteBoard {
     }
 
     _blur() {
-        const view = this._focused;
+        // The stage focus holder is the source of truth; the tracked
+        // this._focused can lag behind one press behind.
+        let view = null;
+        const focused = global.stage.get_key_focus();
+        for (const candidate of this._views.values()) {
+            if (candidate.text === focused) {
+                view = candidate;
+                break;
+            }
+        }
+        view ??= this._focused;
         if (!view)
             return;
         this._focused = null;
         view.editing = false;
         this._dropHold(view);
+        this._autoPreview(view);
         this._syncRibbon(view);
         if (global.stage.get_key_focus() === view.text)
             global.stage.set_key_focus(null);
@@ -1424,6 +1458,26 @@ export class NoteBoard {
             this._focusLater(view);
     }
 
+    // Losing focus automatically switches the note to the preview. Editing
+    // comes back via the menu (Edit Markdown) or double-clicking the note.
+    _autoPreview(view) {
+        if (view.previewMode)
+            return;
+        view.previewMode = true;
+        this._refreshPreview(view);
+        view.text.visible = false;
+        view.preview.visible = true;
+        this._layout(view);
+    }
+
+    // The shell does not always steal the stage key focus for an ordinary
+    // application window, so the window-focus signal is the reliable
+    // indicator that the user left the note.
+    _onFocusWindow() {
+        if (this._focused)
+            this._blur();
+    }
+
     _toggleLock(view) {
         view.note.locked = !view.note.locked;
         this._paint(view);
@@ -1434,6 +1488,9 @@ export class NoteBoard {
 
     _openMenu(view) {
         this._closeMenu();
+        // Opening the menu of another note leaves the note being edited.
+        if (global.stage.get_key_focus() !== view.text)
+            this._blur();
         this._focus(view, false);
         const menu = new PopupMenu.PopupMenu(view.grip, 0.0, St.Side.TOP);
         const colors = new St.BoxLayout({
