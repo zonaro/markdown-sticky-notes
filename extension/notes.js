@@ -16,23 +16,23 @@ import {
     editSizes,
     endList,
     ensureMarker,
-    inheritedStyle,
+    insertTable,
     lineMark,
     listContinuation,
     markAt,
+    markerStatesAt,
     paintStyle,
     retargetSizes,
     retargetSpans,
     selectionSize,
-    selectionStyle,
     shiftSpans,
     stepSize,
     stepSizes,
-    toggleBit,
+    toggleMarker,
     toggleBoxAt,
     typingSize,
-    typingStyle,
     utf8Length,
+    MARKERS,
     STYLE_BOLD,
     STYLE_ITALIC,
     STYLE_STRIKE,
@@ -585,8 +585,6 @@ export class NoteBoard {
             note, frame, card, grip, text, preview, resize, scroll, editClick,
             previewMode: false,
             editing: false,
-            hold: false,
-            pending: 0,
             sizeHold: false,
             pendingSize: 0,
             anchor: null,
@@ -607,6 +605,7 @@ export class NoteBoard {
             onPointer: () => this._anchor(view),
             onStyle: bit => this._toggleStyle(view, bit),
             onList: kind => this._applyMarker(view, kind),
+            onTable: () => this._insertTable(view),
             onSize: delta => this._stepTextSize(view, delta),
             onKeep: () => this._keepTyping(view),
         });
@@ -832,7 +831,6 @@ export class NoteBoard {
     }
 
     _dropHold(view) {
-        view.hold = false;
         view.sizeHold = false;
     }
 
@@ -1039,13 +1037,6 @@ export class NoteBoard {
         let sizes = editSizes(view.note.sizes, prev, edit.start, edit.removed, edit.inserted,
             view.sizeHold ? view.pendingSize : null);
         const newLen = oldLen - edit.removed + edit.inserted;
-        if (edit.inserted > 0) {
-            const style = view.hold
-                ? view.pending
-                : edit.removed === 0 ? inheritedStyle(view.note.spans, oldLen, edit.start) : 0;
-            if (style)
-                spans = paintStyle(spans, newLen, edit.start, edit.start + edit.inserted, style);
-        }
         if (edit.inserted === 1 && edit.removed === 0 && Array.from(next)[edit.start] === '\n') {
             const prefix = listContinuation(next, edit.start);
             if (prefix) {
@@ -1089,7 +1080,7 @@ export class NoteBoard {
         });
     }
 
-    _commitText(view, text, cursor, spans = null, sizes = null) {
+    _commitText(view, text, cursor, spans = null, sizes = null, selection = null) {
         spans ??= retargetSpans(view.note.spans, view.note.text, text);
         sizes ??= retargetSizes(view.note.sizes, view.note.text, text);
         view.rewrite = true;
@@ -1097,7 +1088,10 @@ export class NoteBoard {
         view.note.spans = spans;
         view.note.sizes = sizes;
         view.text.set_text(text);
-        view.text.set_cursor_position(cursor);
+        if (selection && selection[0] !== selection[1])
+            view.text.set_selection(selection[0], selection[1]);
+        else
+            view.text.set_cursor_position(cursor);
         view.rewrite = false;
         this._showAttrs(view);
         this._syncRibbon(view);
@@ -1120,23 +1114,30 @@ export class NoteBoard {
         return [Math.min(start, end), Math.max(start, end)];
     }
 
+    // Applies (or removes) the Markdown marker for the style around the
+    // selection, or inserts an empty pair with the caret inside. Legacy
+    // spans of existing notes stay untouched and keep rendering.
     _toggleStyle(view, bit) {
         if (view.note.locked)
             return;
-        const length = Array.from(view.note.text).length;
+        const marker = MARKERS[bit];
+        if (!marker)
+            return;
         const [start, end] = view.anchor ?? this._range(view);
-        if (start !== end) {
-            const result = toggleBit(view.note.spans, length, start, end, bit);
-            view.note.spans = result.spans;
-            view.pending = result.bits;
-            view.hold = true;
-            this._showAttrs(view);
-            view.text.set_selection(start, end);
-            this._scheduleSave();
-        } else {
-            view.pending ^= bit;
-            view.hold = true;
-        }
+        const next = toggleMarker(view.note.text, start, end, marker);
+        this._commitText(view, next.text, next.end, null, null, [next.start, next.end]);
+        view.anchor = null;
+        this._keepTyping(view);
+    }
+
+    _insertTable(view) {
+        if (view.note.locked)
+            return;
+        const [, end] = view.anchor ?? this._range(view);
+        // Insert at the caret end and keep whatever was selected.
+        const next = insertTable(view.note.text, end, end);
+        this._commitText(view, next.text, next.cursor);
+        view.anchor = null;
         this._keepTyping(view);
     }
 
@@ -1148,6 +1149,7 @@ export class NoteBoard {
         if (!next)
             return;
         this._commitText(view, next.text, next.cursor);
+        view.anchor = null;
         this._keepTyping(view);
     }
 
@@ -1183,17 +1185,10 @@ export class NoteBoard {
         this._syncRibbon(view);
     }
 
+    // Style bits from the Markdown markers around the caret or selection.
     _toolBits(view) {
-        const length = Array.from(view.note.text).length;
         const [start, end] = this._range(view);
-        const selected = selectionStyle(view.note.spans, length, start, end);
-        if (selected !== null)
-            return selected;
-        if (view.hold)
-            return view.pending;
-        const bits = typingStyle(view.note.spans, length, end);
-        view.pending = bits;
-        return bits;
+        return markerStatesAt(view.note.text, start, end);
     }
 
     // Null when the selection mixes sizes.
