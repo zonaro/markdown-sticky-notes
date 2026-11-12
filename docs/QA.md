@@ -13,6 +13,7 @@
 - [ ] Create, edit, move, resize, duplicate, lock, recolor, hide/show and permanently delete a note.
 - [ ] Switch between **Edit Markdown** and **Preview Markdown**, checking headings, checklists, and that frontmatter is never shown as note content.
 - [ ] Pin an individual note above app windows and unpin it; test focus, pointer clicks outside the note, and Alt+Tab.
+- [ ] With the **Pin new notes above windows** preference on (default) and off, create notes and confirm the layer placement; confirm existing notes keep their pin state.
 - [ ] Move between workspaces and test foreground/background ordering.
 - [ ] Restart the session and confirm text, position, size, color, lock/pin state and global visibility survive.
 - [ ] Use GNOME shortcuts and change options in GTK4/libadwaita preferences.

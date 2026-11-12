@@ -34,6 +34,12 @@ export default class StickyNotesPreferences extends ExtensionPreferences {
             t('Keep the note you are typing in front of the other notes'),
             t('Notes stay on the desktop, underneath application windows.'),
         ));
+        behavior.add(switchRow(
+            settings,
+            'pin-new-notes',
+            t('Pin new notes above windows'),
+            t('New notes start pinned above application windows. You can unpin them from the note menu.'),
+        ));
         page.add(behavior);
 
         const size = new Adw.PreferencesGroup({

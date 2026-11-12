@@ -219,13 +219,14 @@ export class NoteBoard {
     _defaultNote(filename) {
         const w = this._settings.get_int('note-width');
         const h = this._settings.get_int('note-height');
+        const pinNew = this._settings.get_boolean('pin-new-notes');
         const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
         const [x, y] = freshOrigin(obstacles, this._workAreas(), w, h, null, null);
         return {
             id: this._store.next_id++,
             filename, x, y, w, h, expanded_h: h,
             color: this._store.notes.length % PALETTE.length,
-            size: 13, collapsed: false, locked: false, pinned: false,
+            size: 13, collapsed: false, locked: false, pinned: pinNew,
             text: '', spans: [], sizes: [], workspace: this._workspace(),
         };
     }
@@ -394,7 +395,7 @@ export class NoteBoard {
         const note = {
             id,
             filename: this._files.newFilename(id),
-            pinned: false,
+            pinned: this._settings.get_boolean('pin-new-notes'),
             x,
             y,
             w,

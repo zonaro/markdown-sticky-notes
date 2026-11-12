@@ -22,6 +22,11 @@
       <summary>Raise the focused note above the other notes</summary>
       <description>Notes stay on the desktop, underneath application windows.</description>
     </key>
+    <key name="pin-new-notes" type="b">
+      <default>true</default>
+      <summary>Pin new notes above windows</summary>
+      <description>Newly created notes start pinned above ordinary application windows. Individual notes can still be unpinned from the note menu.</description>
+    </key>
     <key name="note-width" type="i">
       <default>230</default>
       <range min="180" max="960"/>
