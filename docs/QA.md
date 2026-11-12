@@ -12,6 +12,11 @@
 ## Shell UI
 - [ ] Create, edit, move, resize, duplicate, lock, recolor, hide/show and permanently delete a note.
 - [ ] Switch between **Edit Markdown** and **Preview Markdown**, checking headings, checklists, and that frontmatter is never shown as note content.
+- [ ] Use the formatting bar on a selection: **Bold**, *Italic* and **Strikethrough** wrap it in `**…**`, `*…*` and `~~…~~`; selecting again and pressing the same button unwraps it. **Underline** emits `<u>…</u>`. Check the saved `.md` ends up with the markers.
+- [ ] Press the same buttons with nothing selected: an empty pair is inserted and the caret lands inside it; typing stays inside the pair.
+- [ ] Bullet, checkbox and numbered list buttons emit `- `, `- [ ] ` and `N. ` in the `.md`. Enter continues a list with the incremented number; Backspace on a marker removes only the marker; Enter on an empty item exits the list.
+- [ ] **Insert table** drops a 3×2 pipe-table skeleton at the caret (existing text is kept); **Preview Markdown** renders it with borders, a bold header and aligned columns.
+- [ ] Open a note saved by an older version (with `gnome-sticky-spans`); its visually styled text keeps rendering in the editor.
 - [ ] Pin an individual note above app windows and unpin it; test focus, pointer clicks outside the note, and Alt+Tab.
 - [ ] With the **Pin new notes above windows** preference on (default) and off, create notes and confirm the layer placement; confirm existing notes keep their pin state.
 - [ ] Move between workspaces and test foreground/background ordering.

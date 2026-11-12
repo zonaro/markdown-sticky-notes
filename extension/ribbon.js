@@ -62,7 +62,9 @@ export class NoteRibbon {
         this._lists = [
             ['check', this._add('checkbox-symbolic', 'Checkbox', () => handlers.onList('check'))],
             ['bullet', this._add('view-list-bullet-symbolic', 'Bullet', () => handlers.onList('bullet'))],
+            ['number', this._add('view-list-ordered-symbolic', 'Numbered list', () => handlers.onList('number'))],
         ];
+        this._add('x-office-spreadsheet-symbolic', 'Insert table', () => handlers.onTable());
         this._add('zoom-out-symbolic', 'Smaller text', () => handlers.onSize(-1));
         this._size = new St.Label({
             text: '13',

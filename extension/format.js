@@ -1,38 +1,73 @@
 // Character styles and list markers. Offsets are Unicode scalars, matching notes.json.
 
+// Markdown list markers. Bullet, checkbox and numbered markers are emitted
+// as Markdown syntax; the glyph markers stay readable for notes written by
+// earlier versions of the extension.
 export const STYLE_BOLD = 1;
 export const STYLE_ITALIC = 2;
 export const STYLE_UNDERLINE = 4;
 export const STYLE_STRIKE = 8;
+
+export const MARKERS = {
+    [STYLE_BOLD]: {open: '**', close: '**'},
+    [STYLE_ITALIC]: {open: '*', close: '*'},
+    [STYLE_STRIKE]: {open: '~~', close: '~~'},
+    [STYLE_UNDERLINE]: {open: '<u>', close: '</u>'},
+};
 
 const BOX_OPEN = '\u2610';
 const BOX_DONE = '\u2611';
 const TEXT_STYLE = '\ufe0e';
 const BULLET = '\u2022';
 
+// Display glyph prefix kept for the to-do display helpers; never emitted to
+// Markdown files. Markdown emission uses markdownCheckboxPrefix.
 export function checkboxPrefix(done) {
     return `${done ? BOX_DONE : BOX_OPEN}${TEXT_STYLE} `;
 }
 
-export function bulletPrefix() {
-    return `${BULLET} `;
+export function markdownCheckboxPrefix(done) {
+    return `- [${done ? 'x' : ' '}] `;
 }
+
+export function bulletPrefix() {
+    return '- ';
+}
+
+export function numberedPrefix(number) {
+    return `${number}. `;
+}
+
+const NUMBERED_RE = /^(\d{1,9})\. /;
 
 export function lineMark(line) {
     const chars = Array.from(line);
     if (!chars.length)
         return null;
     const first = chars[0];
+    // Legacy glyph markers, kept for reading old files. They are rewritten
+    // as Markdown markers as soon as the user edits the line.
     if (first === BOX_OPEN || first === BOX_DONE) {
         let n = 1;
         if (chars[1] === TEXT_STYLE)
             n += 1;
         if (chars[n] === ' ')
             n += 1;
-        return {kind: 'check', done: first === BOX_DONE, chars: n};
+        return {kind: 'check', done: first === BOX_DONE, chars: n, legacy: true, toggle: 0};
     }
     if (first === BULLET)
         return {kind: 'bullet', chars: chars[1] === ' ' ? 2 : 1};
+    // Markdown markers at the very start of the line.
+    if (first === '-' && chars[1] === ' ') {
+        if (chars[2] === '[' &&
+            (chars[3] === ' ' || chars[3] === 'x' || chars[3] === 'X') &&
+            chars[4] === ']' && chars[5] === ' ')
+            return {kind: 'check', done: chars[3] !== ' ', chars: 6, toggle: 3};
+        return {kind: 'bullet', chars: 2};
+    }
+    const numbered = NUMBERED_RE.exec(line);
+    if (numbered)
+        return {kind: 'number', num: parseInt(numbered[1], 10), chars: Array.from(numbered[0]).length};
     return null;
 }
 
@@ -126,56 +161,6 @@ export function styleAt(spans, length, index) {
     return bits;
 }
 
-// Bits shared by the characters on either side of an insertion.
-export function inheritedStyle(spans, length, index) {
-    if (index <= 0 || index >= length)
-        return 0;
-    return styleAt(spans, length, index - 1) & styleAt(spans, length, index);
-}
-
-export function typingStyle(spans, length, cursor) {
-    if (length <= 0)
-        return 0;
-    const index = cursor > 0 ? Math.min(cursor - 1, length - 1) : 0;
-    return styleAt(spans, length, index);
-}
-
-export function selectionStyle(spans, length, start, end) {
-    if (end <= start)
-        return null;
-    const bits = expand(spans, length);
-    let style = 15;
-    const to = Math.min(end, bits.length);
-    if (to <= start)
-        return 0;
-    for (let i = Math.max(0, start); i < to; i++)
-        style &= bits[i];
-    return style & 15;
-}
-
-export function toggleBit(spans, length, start, end, bit) {
-    if (end <= start)
-        return {spans, bits: 0};
-    const styles = expand(spans, Math.max(length, end));
-    let covered = true;
-    for (let i = start; i < end && i < styles.length; i++) {
-        if ((styles[i] & bit) === 0) {
-            covered = false;
-            break;
-        }
-    }
-    for (let i = Math.max(0, start); i < end && i < styles.length; i++) {
-        if (covered)
-            styles[i] &= ~bit;
-        else
-            styles[i] |= bit;
-    }
-    let bits = 15;
-    for (let i = Math.max(0, start); i < end && i < styles.length; i++)
-        bits &= styles[i];
-    return {spans: compact(styles), bits: bits & 15};
-}
-
 export function listContinuation(text, newlineAt) {
     const chars = Array.from(text);
     if (chars[newlineAt] !== '\n')
@@ -190,7 +175,13 @@ export function listContinuation(text, newlineAt) {
     const mark = lineMark(chars.slice(lineStart, newlineAt).join(''));
     if (!mark)
         return null;
-    return mark.kind === 'bullet' ? bulletPrefix() : checkboxPrefix(false);
+    if (mark.kind === 'bullet')
+        return bulletPrefix();
+    if (mark.kind === 'check')
+        return markdownCheckboxPrefix(false);
+    if (mark.kind === 'number')
+        return numberedPrefix(mark.num + 1);
+    return null;
 }
 
 function lineBounds(chars, index) {
@@ -212,6 +203,26 @@ function lineBounds(chars, index) {
     return {start, end};
 }
 
+// The number the next item in a numbered list should carry. Numbering
+// continues from the item right above the cursor, if any.
+function previousNumber(chars, start) {
+    if (start <= 0)
+        return 1;
+    // lineBounds always starts the line at a '\n' + 1 (or 0).
+    let lineEnd = start - 1;
+    if (chars[lineEnd] === '\n')
+        lineEnd -= 1;
+    let lineStart = 0;
+    for (let i = lineEnd; i >= 0; i--) {
+        if (chars[i] === '\n') {
+            lineStart = i + 1;
+            break;
+        }
+    }
+    const mark = lineMark(chars.slice(lineStart, lineEnd + 1).join(''));
+    return mark && mark.kind === 'number' ? mark.num + 1 : 1;
+}
+
 export function ensureMarker(text, cursor, kind) {
     const chars = Array.from(text);
     const at = Math.max(0, Math.min(cursor, chars.length));
@@ -223,7 +234,13 @@ export function ensureMarker(text, cursor, kind) {
         return {text: next.join(''), cursor: nextCursor};
     }
     const old = mark ? mark.chars : 0;
-    const prefix = Array.from(kind === 'bullet' ? bulletPrefix() : checkboxPrefix(false));
+    let prefix;
+    if (kind === 'bullet')
+        prefix = Array.from(bulletPrefix());
+    else if (kind === 'check')
+        prefix = Array.from(markdownCheckboxPrefix(false));
+    else
+        prefix = Array.from(numberedPrefix(previousNumber(chars, start)));
     const next = chars.slice(0, start).concat(prefix, chars.slice(start + old));
     const nextCursor = at < start + old ? start + prefix.length : at + prefix.length - old;
     return {text: next.join(''), cursor: nextCursor};
@@ -273,7 +290,10 @@ export function toggleBoxAt(text, index) {
     const mark = lineMark(chars.slice(start, end).join(''));
     if (!mark || mark.kind !== 'check' || index - start >= mark.chars)
         return null;
-    chars[start] = mark.done ? BOX_OPEN : BOX_DONE;
+    if (mark.legacy)
+        chars[start] = mark.done ? BOX_OPEN : BOX_DONE;
+    else
+        chars[start + mark.toggle] = mark.done ? ' ' : 'x';
     return chars.join('');
 }
 
@@ -422,4 +442,176 @@ export function attributeRuns(text, spans, sizes = []) {
         i = j;
     }
     return runs;
+}
+
+// ---------- Markdown inline markers (toolbar) ----------
+
+function clampOffset(value, length) {
+    return Math.max(0, Math.min(value, length));
+}
+
+function charsMatchAt(chars, at, sequence) {
+    for (let i = 0; i < sequence.length; i++) {
+        if (chars[at + i] !== sequence[i])
+            return false;
+    }
+    return true;
+}
+
+// Non-nesting pairs of `open`/`close` found in [from, to). Used to detect a
+// caret or selection wrapped by a marker on its line.
+function linePairs(chars, from, to, open, close) {
+    const pairs = [];
+    let openAt = -1;
+    for (let i = from; i < to; i++) {
+        if (openAt < 0) {
+            if (charsMatchAt(chars, i, open)) {
+                openAt = i;
+                i += open.length - 1;
+            }
+        } else if (charsMatchAt(chars, i, close)) {
+            pairs.push({open: openAt, close: i});
+            openAt = -1;
+            i += close.length - 1;
+        }
+    }
+    return pairs;
+}
+
+function lineBoundsAt(chars, index) {
+    let from = 0;
+    for (let i = index - 1; i >= 0; i--) {
+        if (chars[i] === '\n') {
+            from = i + 1;
+            break;
+        }
+    }
+    let to = chars.length;
+    for (let i = index; i < chars.length; i++) {
+        if (chars[i] === '\n') {
+            to = i;
+            break;
+        }
+    }
+    return {from, to};
+}
+
+function normalizedRange(chars, start, end) {
+    const length = chars.length;
+    let from = clampOffset(start, length);
+    let to = clampOffset(end, length);
+    if (from > to)
+        [from, to] = [to, from];
+    return [from, to];
+}
+
+function selectionWrappedOutside(chars, start, end, open, close) {
+    return start >= open.length &&
+        end + close.length <= chars.length &&
+        charsMatchAt(chars, start - open.length, open) &&
+        charsMatchAt(chars, end, close);
+}
+
+function selectionWrappedInside(chars, start, end, open, close) {
+    return end - start >= open.length + close.length &&
+        charsMatchAt(chars, start, open) &&
+        charsMatchAt(chars, end - close.length, close);
+}
+
+// Style bits set when the range matches a wrapped pair: either the markers
+// sit just outside the selection, or inside it. An empty selection reports
+// the markers enclosing the caret on its line.
+export function markerStatesAt(text, start, end) {
+    const chars = Array.from(text);
+    const [from, to] = normalizedRange(chars, start, end);
+    let bits = 0;
+    for (const [bit, marker] of Object.entries(MARKERS)) {
+        const open = Array.from(marker.open);
+        const close = Array.from(marker.close);
+        let on = false;
+        if (from === to) {
+            const {from: lineFrom, to: lineTo} = lineBoundsAt(chars, from);
+            on = linePairs(chars, lineFrom, lineTo, open, close)
+                .some(pair => pair.open < from && from < pair.close + close.length);
+        } else {
+            on = selectionWrappedOutside(chars, from, to, open, close) ||
+                selectionWrappedInside(chars, from, to, open, close);
+        }
+        if (on)
+            bits |= Number(bit);
+    }
+    return bits;
+}
+
+// Wraps [start, end) with `marker`, or unwraps it when it is already wrapped
+// (markers just outside the selection or inside it). With no selection, a
+// pair enclosing the caret is removed; otherwise an empty pair is inserted
+// with the caret between the markers. Returns the new selection, so a
+// selected range stays selected after the toggle.
+export function toggleMarker(text, start, end, marker) {
+    const chars = Array.from(text);
+    const [from, to] = normalizedRange(chars, start, end);
+    const open = Array.from(marker.open);
+    const close = Array.from(marker.close);
+    if (from === to) {
+        const {from: lineFrom, to: lineTo} = lineBoundsAt(chars, from);
+        const pair = linePairs(chars, lineFrom, lineTo, open, close)
+            .find(candidate => candidate.open < from && from < candidate.close + close.length);
+        if (pair) {
+            const next = chars.slice(0, pair.open).concat(
+                chars.slice(pair.open + open.length, pair.close),
+                chars.slice(pair.close + close.length));
+            return {text: next.join(''), start: pair.open, end: pair.open};
+        }
+        const next = chars.slice(0, from).concat(open, close, chars.slice(from));
+        return {text: next.join(''), start: from + open.length, end: from + open.length};
+    }
+    if (selectionWrappedOutside(chars, from, to, open, close)) {
+        const next = chars.slice(0, from - open.length).concat(chars.slice(from, to))
+            .concat(chars.slice(to + close.length));
+        return {text: next.join(''), start: from - open.length, end: to - open.length};
+    }
+    if (selectionWrappedInside(chars, from, to, open, close)) {
+        const next = chars.slice(0, from).concat(chars.slice(from + open.length, to - close.length))
+            .concat(chars.slice(to));
+        return {text: next.join(''), start: from, end: to - open.length - close.length};
+    }
+    const next = chars.slice(0, from).concat(open, chars.slice(from, to), close, chars.slice(to));
+    return {text: next.join(''), start: from + open.length, end: to + open.length};
+}
+
+// ---------- Markdown tables ----------
+
+// A small 3x2 skeleton for the Insert table button: three columns, two
+// empty data rows, caret in the first header cell.
+export function tableSkeleton() {
+    return [
+        '| Col 1 | Col 2 | Col 3 |',
+        '| --- | --- | --- |',
+        '|  |  |  |',
+        '|  |  |  |',
+    ];
+}
+
+export function insertTable(text, start, end) {
+    const chars = Array.from(text);
+    const [from, to] = normalizedRange(chars, start, end);
+    const before = chars.slice(0, from);
+    const after = chars.slice(to);
+    // The table starts on its own line.
+    let prefix = '';
+    for (let i = before.length - 1; i >= 0; i--) {
+        if (before[i] === '\n')
+            break;
+        if (before[i] !== ' ' && before[i] !== '\t') {
+            prefix = '\n';
+            break;
+        }
+    }
+    const block = prefix + tableSkeleton().join('\n');
+    // Whatever follows the selection lands on the next line, or on a new one.
+    const tail = after.length ? (after[0] === '\n' ? after.join('') : `\n${after.join('')}`) : '\n';
+    const next = before.join('') + block + tail;
+    const cursor = from + Array.from(prefix).length + Array.from('| ').length;
+    return {text: next, cursor};
 }
