@@ -8,9 +8,9 @@ cd "$(dirname "$0")"
 if [[ "${1:-}" == "--github" ]]; then
     remote_tmp="$(mktemp -d)"
     trap 'rm -rf "$remote_tmp"' EXIT
-    curl -fsSL https://github.com/zonaro/notes-extension-gnome/archive/refs/heads/master.tar.gz |
+    curl -fsSL https://github.com/zonaro/markdown-sticky-notes/archive/refs/heads/master.tar.gz |
         tar -xz -C "$remote_tmp"
-    bash "$remote_tmp/notes-extension-gnome-master/install.sh" --local
+    bash "$remote_tmp/markdown-sticky-notes-master/install.sh" --local
     exit 0
 fi
 if [[ "$#" -gt 0 && "${1:-}" != "--local" ]]; then

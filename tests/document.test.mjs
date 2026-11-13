@@ -96,3 +96,11 @@ test('supports CRLF frontmatter without changing the Markdown content', () => {
     assert.equal(parsed.metadata.x, 11);
     assert.equal(parsed.body, '# Title\r\n');
 });
+
+test('expiration is persisted as a string and survives other saves', () => {
+    const withExpiry = writeDocument({...note, expires: '2026-11-20T18:30'});
+    const decoded = parseDocument(withExpiry);
+    assert.equal(decoded.metadata.expires, '2026-11-20T18:30');
+    const untouched = writeDocument({...note});
+    assert.equal(parseDocument(untouched).metadata.expires, undefined);
+});

@@ -1,12 +1,12 @@
 {
   "uuid": "notes@redclaw.com.br",
-  "name": "Notes",
-  "description": "Desktop sticky notes backed by synchronized Markdown files in ~/notes/.",
+  "name": "Markdown Sticky Notes",
+  "description": "Markdown Sticky Notes — desktop sticky notes backed by synchronized Markdown files in ~/notes/.",
   "shell-version": [
     "50",
     "51"
   ],
   "settings-schema": "org.gnome.shell.extensions.sticky-notes",
-  "url": "https://github.com/zonaro/notes-extension-gnome",
+  "url": "https://github.com/zonaro/markdown-sticky-notes",
   "version": 1
 }

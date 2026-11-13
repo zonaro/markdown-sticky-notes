@@ -148,3 +148,110 @@
     font-size: 13pt;
     padding: 6px 14px 12px 12px;
 }
+
+/* Boards: a folder rendered as a fixed-size container window. */
+.sticky-note-board {
+    border-radius: 12px;
+}
+.sticky-note-board-header {
+    border-radius: 12px 12px 0 0;
+}
+.sticky-note-board-toggle {
+    font-size: 12pt;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0 4px;
+    border-radius: 6px;
+    background: transparent;
+    color: #322f38;
+}
+.sticky-note-board-toggle:hover {
+    background-color: rgba(50, 47, 56, 0.12);
+}
+.sticky-note-board-title {
+    color: #322f38;
+    font-weight: bold;
+}
+.sticky-note-board-body {
+    padding: 4px 10px 6px 10px;
+    color: #322f38;
+}
+
+/* Preview rows. Each row is its own actor; inline styles set the font
+   size from the note zoom. */
+.sticky-note-preview-line {
+    padding: 0;
+}
+.sticky-note-preview-block {
+    padding: 2px 0;
+    font-family: monospace;
+}
+.sticky-note-image {
+    padding: 4px 0;
+}
+.sticky-note-image-alt {
+    color: #5e5c64;
+    font-style: italic;
+}
+.sticky-note-image-pic {
+    border-radius: 6px;
+}
+.sticky-note-diagram {
+    padding: 4px 0;
+}
+.sticky-note-diagram-hint {
+    color: #9a989e;
+    font-style: italic;
+}
+
+/* Custom color: the last ball and its inline editor */
+.sticky-swatch-custom {
+    background-color: #322f38;
+    color: #f6f5f4;
+    font-size: 14pt;
+    font-weight: bold;
+    border-radius: 22px;
+    border: 2px solid rgba(0, 0, 0, 0.3);
+}
+.sticky-swatch-custom.current {
+    border-color: #1c71d8;
+}
+.sticky-swatch-editor {
+    spacing: 6px;
+    padding: 6px 2px 2px 2px;
+}
+.sticky-swatch-entry {
+    min-width: 80px;
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.88);
+    color: #322f38;
+    padding: 2px 6px;
+}
+.sticky-swatch-preview {
+    border-radius: 11px;
+    border: 1px solid rgba(0, 0, 0, 0.45);
+    background-color: transparent;
+}
+.sticky-swatch-apply {
+    min-width: 26px;
+    border-radius: 11px;
+    background-color: rgba(50, 47, 56, 0.75);
+    color: #f6f5f4;
+    font-size: 11pt;
+}
+
+/* Expiry badge in the note grip + inline expiration editor */
+.sticky-note-expiry {
+    font-size: 8pt;
+    color: rgba(50, 47, 56, 0.78);
+    padding: 0 2px;
+}
+.expiry-editor {
+    spacing: 6px;
+    padding: 6px 2px 2px 2px;
+}
+.expiry-icon {
+    font-size: 13pt;
+    color: rgba(50, 47, 56, 0.8);
+    padding: 0 2px;
+}

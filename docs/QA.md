@@ -35,7 +35,7 @@
 - [ ] Rename `tarefas.markdown` to `novas-tarefas.md`; same note content and metadata remain.
 - [ ] Delete a note; *only* its file disappears, without an extension trash.
 - [ ] Delete `reuniao.md` externally; the sticky note disappears and the file stays deleted.
-- [ ] Check that `.txt` and nested Markdown files do not produce notes.
+- [ ] `.txt` and `.markdown` files in folders at any depth are notes (Markdown renders normally); `.md`/`.markdown` directly in `~/notes/` are notes; `.board.md` files (any depth) never become notes.
 - [ ] Disable and enable the extension; verify no duplicates.
 
 ## Frontmatter and installer
@@ -56,6 +56,35 @@
 - [ ] Set `todo-file` to empty in Preferences: the TODO note disappears; set a custom path: it appears there (with `~` resolving to the home directory); clearing the setting again removes the note without touching the file.
 - [ ] Delete `~/todo.txt` externally: the note disappears; **TODO note** in the top-bar menu recreates an empty file and reopens the note; the note cannot be deleted or duplicated from inside the extension; **Delete all notes** leaves it untouched.
 - [ ] Check the file with `todo.sh ls` / `todo.sh do` if installed: output matches expectations; no ☐/☑ glyph characters ever appear in the file.
+
+## Preview, links, images and diagrams
+- [ ] In **Preview Markdown**, click a `- [ ]` / `- [x]` task item: the marker flips in the source file (no edit mode needed), including on locked notes; the cursor changes to a pointer over interactive rows; the checkbox state survives a session restart.
+- [ ] A **Copy note** item appears in the note context menu and copies exactly the Markdown body (no frontmatter; for the TODO note, the todo.txt without ☐/☑ glyphs).
+- [ ] Click a Markdown link `[text](https://…)` in the preview: the default browser/app opens it; relative links resolve against the note's folder inside `~/notes/`; `javascript:` URLs are not clickable.
+- [ ] A note with `![alt](~/file.png)` shows the image inline in the preview (width fits the note, aspect preserved); a broken or missing file shows the alt text instead, never an empty box.
+- [ ] An `http(s)://` image downloads once into `~/.cache/markdown-sticky-notes/images/` and renders on later views; a non-image response or network failure falls back to the alt text.
+- [ ] A fenced block with info `dot` (graphviz installed) renders the diagram in the preview; with graphviz unavailable it renders as code plus an install hint; ` ```mermaid ` renders when `mmdc` is on PATH, otherwise code plus a hint; an invalid diagram body never breaks the preview.
+- [ ] Fenced blocks with any other info string keep rendering as monospace code.
+- [ ] Tiny and huge zoom levels: **A-**/**A+** (ribbon) and **Zoom in/out** (context menu) scale everything — frame, text, grip, preview, handles — from 5% to 200%; the note menu shows the current value; the zoom survives a session restart (`gnome-sticky-zoom`; the TODO note keeps it in `todo-layout`); `gnome-sticky-font-size` is no longer changed by these controls.
+
+- [ ] Expiring notes: "In 1 hour" on a note sets `gnome-sticky-expires` in its frontmatter, the `⌛` badge shows in the grip; after the hour passes the note disappears and its file is removed without any user interaction; "Clear expiry" removes the field and the badge; editing the frontmatter externally to a past/future time is honored on the next sweep (file wins); the TODO note and boards have no expiration option and never expire; a note already expired at load time is gone on the first sweep.
+
+## Keyboard, mouse and colors
+- [ ] In edit mode: `Ctrl+B/I/U` bold/italic/underline; `Ctrl+Shift+X` strikethrough; `Ctrl+Shift+C` inline code; `Ctrl+Shift+7/8/9` numbered/bullet/checkbox lists (including shifted glyphs on US/ABNT keyboards); locked notes and non-editing state are unaffected.
+- [ ] With the note focused and not in edit mode: `Ctrl+C` copies; `Ctrl+Delete` deletes (the note disappears and the file is removed); `Ctrl+Scroll` zooms 5–200%; `Middle click` copies; `Ctrl+Middle click` duplicates; in editing mode none of these steal typing or selection.
+- [ ] The last swatch (+) opens the custom color picker; typing `#RRGGBB`/`#RGB` updates the preview live; Enter or ✓ applies and persists in `gnome-sticky-color-custom`; invalid values are ignored; dark colors keep legible light ink; picking a preset clears the custom color; boards honor the same picker.
+
+## Boards
+- [ ] Create `~/notes/projetos/.board.md` with `title: Projetos` and some Markdown; the board appears as a container window: its Markdown renders above the child notes, which appear inside as cards.
+- [ ] Boards nest: `projetos/2026/.board.md` and `projetos/2026/roadmaps/.board.md`; each level renders and stays interactive; nested boards hide with their parent; collapsing any board hides its whole subtree.
+- [ ] Dragging a board moves all of its descendants together; resizing the board keeps cards inside (children are clamped to the board); child notes can be dragged freely within the board.
+- [ ] Editing a child note updates its file; its frontmatter coordinates are relative to the board; `.board.md` stores the board's absolute position; renaming the folder in a file manager moves nothing except the path prefix.
+- [ ] **Unboard** from a board's context menu removes only its `.board.md`; all notes and nested boards rise one level in place, without any content change.
+- [ ] Deleting a `.board.md` externally behaves like Unboard; deleting a whole board folder removes all notes under it (they were its contents) without leaving orphan views or JS ERROR lines in the journal.
+- [ ] **New board** (top-bar menu) creates a board at the root; **New note in board** and **New board in board** (board menu) create inside that board; **Open board folder** opens the folder.
+- [ ] In the top-bar menu, **Delete all notes** opens a submenu with two options: **Permanently delete every Markdown note** (notes in every folder die; boards remain) and **Delete a board** — a live list of boards by title; activating one deletes the board folder recursively (notes, nested boards and its `.board.md`), and everything disappears from the desktop without JS ERROR in the journal. With no boards, the submenu shows an insensitive "No boards" item.
+- [ ] Boards respect workspaces, pin state, hiding and the **Show/Hide notes** toggle exactly like notes.
+- [ ] Restart the session: board position, size, collapsed state, color, zoom, pin/lock and workspace survive; unrelated frontmatter in `.board.md` is preserved on save.
 
 ## Diagnostics
 Run these commands and attach the output only if there is a failure:

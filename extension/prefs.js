@@ -14,7 +14,7 @@ export default class StickyNotesPreferences extends ExtensionPreferences {
         window.set_default_size(620, 680);
 
         const page = new Adw.PreferencesPage({
-            title: t('Sticky Notes'),
+            title: t('Markdown Sticky Notes'),
             icon_name: 'preferences-system-symbolic',
         });
 

@@ -15,6 +15,10 @@ const FIELDS = {
     locked: 'gnome-sticky-locked',
     spans: 'gnome-sticky-spans',
     sizes: 'gnome-sticky-sizes',
+    zoom: 'gnome-sticky-zoom',
+    collapsed: 'gnome-sticky-collapsed',
+    custom_color: 'gnome-sticky-color-custom',
+    expires: 'gnome-sticky-expires',
 };
 const OWNED = new Set(Object.values(FIELDS));
 const ALIASES = {
@@ -65,11 +69,14 @@ export function parseDocument(source) {
         if (value === undefined)
             continue;
         const parsed = decode(value);
-        if (property === 'pinned' || property === 'locked') {
+        if (property === 'pinned' || property === 'locked' || property === 'collapsed') {
             if (typeof parsed === 'boolean')
                 metadata[property] = parsed;
         } else if (property === 'spans' || property === 'sizes') {
             if (Array.isArray(parsed))
+                metadata[property] = parsed;
+        } else if (property === 'custom_color' || property === 'expires') {
+            if (typeof parsed === 'string')
                 metadata[property] = parsed;
         } else if (Number.isInteger(parsed)) {
             metadata[property] = parsed;
@@ -87,6 +94,9 @@ export function writeDocument(note, previous = '') {
     const own = Object.entries(FIELDS).map(([property, key]) => {
         const value = note[property];
         if (value === undefined || value === null)
+            return null;
+        // Collapsed only matters for boards; keep note frontmatter free of it.
+        if (property === 'collapsed' && value === false)
             return null;
         return `${key}: ${JSON.stringify(value)}`;
     }).filter(Boolean);

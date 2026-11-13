@@ -40,6 +40,16 @@ export function numberedPrefix(number) {
 
 const NUMBERED_RE = /^(\d{1,9})\. /;
 
+// Flip the [ ]/[x] marker of a checkbox line, whatever its indentation.
+// Returns the new line, or null when the line is not a task list item.
+export function toggleCheckboxLine(line) {
+    const match = line.match(/^(\s*(?:-|\*|\+)\s+\[)([xX ])(\])/);
+    if (!match)
+        return null;
+    const at = match[1].length;
+    return line.slice(0, at) + (match[2] === ' ' ? 'x' : ' ') + line.slice(at + 1);
+}
+
 export function lineMark(line) {
     const chars = Array.from(line);
     if (!chars.length)

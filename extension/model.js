@@ -69,6 +69,85 @@ export function normalizeSize(size) {
     return 13;
 }
 
+// Normalize a user-supplied hex color: '#rgb' becomes '#rrggbb'; returns null
+// when invalid.
+export function normalizeHexColor(value) {
+    if (typeof value !== 'string')
+        return null;
+    let hex = value.trim().toLowerCase();
+    if (!hex.startsWith('#'))
+        hex = `#${hex}`;
+    if (/^#[0-9a-f]{3}$/.test(hex)) {
+        const [r, g, b] = hex.slice(1);
+        hex = `#${r}${r}${g}${g}${b}${b}`;
+    }
+    return /^#[0-9a-f]{6}$/.test(hex) ? hex : null;
+}
+
+// Relative luminance check; true when light text should be used.
+export function hexIsDark(hex) {
+    const value = normalizeHexColor(hex);
+    if (!value)
+        return false;
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16) / 255);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45;
+}
+
+// Parse an expiration timestamp: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'/'T'.
+// Local time, no timezone. Returns null on any invalid input (including
+// impossible dates such as February 31st).
+export function parseExpires(value) {
+    if (typeof value !== 'string')
+        return null;
+    const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?(?::(\d{2}))?$/);
+    if (!match)
+        return null;
+    const [, y, mo, d, hh = '00', mm = '00', ss = '00'] = match;
+    const year = Number(y);
+    const month = Number(mo);
+    const day = Number(d);
+    const hour = Number(hh);
+    const minute = Number(mm);
+    const second = Number(ss);
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59)
+        return null;
+    const date = new Date(year, month - 1, day, hour, minute, second);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+        || date.getHours() !== hour || date.getMinutes() !== minute)
+        return null;
+    return date;
+}
+
+// Human-readable expiration for UI and frontmatter suggestions.
+export function formatExpires(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Frontmatter-friendly timestamp (compact, no seconds when not needed).
+export function expiresToFrontmatter(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T`
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Zoom percentage of a note or board: 5 to 200, default 100. Everything
+// in the view scales by this factor, not just the font.
+export function normalizeZoom(zoom) {
+    if (zoom === null || zoom === undefined)
+        return 100;
+    const value = Number(zoom);
+    if (!Number.isFinite(value))
+        return 100;
+    return Math.min(200, Math.max(5, Math.round(value)));
+}
+
+// Display font size in points for a zoom factor.
+export function zoomFont(zoom, base = 13) {
+    return Math.max(6, Math.round(base * normalizeZoom(zoom) / 100));
+}
+
 function clampInt(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }

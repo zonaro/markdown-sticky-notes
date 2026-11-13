@@ -198,9 +198,9 @@ export class NoteRibbon {
         return this.actor.visible;
     }
 
-    // Null when the selection mixes sizes.
+    // Null when the zoom is unknown. The label mirrors the note zoom.
     setSize(size) {
-        const label = size === null ? '\u2013' : String(size);
+        const label = size === null ? '\u2013' : `${size}%`;
         if (this._size.text !== label)
             this._size.text = label;
     }

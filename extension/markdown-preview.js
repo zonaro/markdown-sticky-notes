@@ -1,6 +1,11 @@
 // A deliberately small, safe Pango-markup preview for common Markdown.
 // All user content is escaped; markup is generated only by our own renderer.
 // The editable source remains the original Markdown string.
+//
+// The renderer emits a list of ROWS, one per rendered line group. The
+// notes lay each row out as its own actor, which is what makes pointer
+// hit-testing exact: no byte-offset mapping between Pango and the
+// source is ever needed.
 import {utf8Length} from './format.js';
 import {parseTodoLine, dueStatus, splitDisplayLine, toDateString} from './todo.js';
 
@@ -11,6 +16,12 @@ function escapePango(text) {
 
 function displayWidth(text) {
     return Array.from(text).length;
+}
+
+// Remove the Pango tags our renderer emits. User content never carries a
+// raw '<', so stripping tags is exact for our own markup.
+function stripTags(text) {
+    return text.replace(/<[^>]+>/g, '');
 }
 
 // Text with the inline markers removed, for measuring column widths.
@@ -27,45 +38,99 @@ function stripInline(source) {
         if (token.startsWith('\`'))
             return token.slice(1, -1);
         if (token.startsWith('['))
-            return token.slice(1, token.indexOf(']'));
+            return token.slice(1, token.indexOf(']('));
         return token.slice(1, -1);
     });
 }
 
-function inline(source) {
-    // Non-nested Markdown spans; unmatched delimiters remain literal.
-    const tokens = /(\`[^\`\n]+\`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^\)\n]*\)|<u>|<\/u>)/g;
-    let result = '';
-    let previous = 0;
-    // Inline HTML underline. It is balanced inside this one line; a stray
-    // close tag is escaped, a missing one is closed at the end of the line.
+// Render inline markup into both Pango markup and the visible plain text,
+// collecting the byte range of every [label](url) in the plain text.
+// `ctx` carries {pango, plain, links}; nested markup calls itself and
+// translates its links into the surrounding byte coordinates.
+function inlineMeasured(source, ctx) {
+    ctx ??= {pango: '', plain: '', links: []};
     let underline = 0;
-    for (const match of source.matchAll(tokens)) {
-        result += escapePango(source.slice(previous, match.index));
+    let previous = 0;
+    for (const match of source.matchAll(INLINE_TOKENS)) {
+        ctx.pango += escapePango(source.slice(previous, match.index));
+        ctx.plain += source.slice(previous, match.index);
         const token = match[0];
         if (token === '<u>') {
-            result += '<u>';
+            ctx.pango += '<u>';
             underline += 1;
         } else if (token === '</u>') {
             if (underline > 0) {
-                result += '</u>';
+                ctx.pango += '</u>';
                 underline -= 1;
             } else {
-                result += '&lt;/u&gt;';
+                ctx.pango += '&lt;/u&gt;';
             }
-        } else if (token.startsWith('**') || token.startsWith('__'))
-            result += `<b>${inline(token.slice(2, -2))}</b>`;
-        else if (token.startsWith('~~'))
-            result += `<s>${inline(token.slice(2, -2))}</s>`;
-        else if (token.startsWith('\`'))
-            result += `<tt>${escapePango(token.slice(1, -1))}</tt>`;
-        else if (token.startsWith('['))
-            result += `<u>${inline(token.slice(1, token.indexOf(']')))}</u>`;
-        else
-            result += `<i>${inline(token.slice(1, -1))}</i>`;
+        } else if (token.startsWith('**') || token.startsWith('__')) {
+            const inner = inlineMeasured(token.slice(2, -2));
+            appendMeasured(ctx, inner, `<b>${inner.pango}</b>`);
+        } else if (token.startsWith('~~')) {
+            const inner = inlineMeasured(token.slice(2, -2));
+            appendMeasured(ctx, inner, `<s>${inner.pango}</s>`);
+        } else if (token.startsWith('\`')) {
+            const inner = source.slice(1, -1);
+            ctx.pango += `<tt>${escapePango(inner)}</tt>`;
+            ctx.plain += inner;
+        } else if (token.startsWith('[')) {
+            const split = token.slice(1, -1).split('](');
+            const label = split[0];
+            const url = split.slice(1).join('](').trim();
+            const inner = inlineMeasured(label);
+            const base = utf8Length(ctx.plain);
+            ctx.links.push(...inner.links.map(link =>
+                ({...link, from: link.from + base, to: link.to + base})));
+            ctx.pango += `<u>${inner.pango}</u>`;
+            ctx.plain += inner.plain;
+            if (safeUrl(url))
+                ctx.links.push({from: base, to: utf8Length(ctx.plain), url});
+        } else {
+            const inner = inlineMeasured(token.slice(1, -1));
+            appendMeasured(ctx, inner, `<i>${inner.pango}</i>`);
+        }
         previous = match.index + token.length;
     }
-    return result + escapePango(source.slice(previous)) + '</u>'.repeat(underline);
+    ctx.pango += escapePango(source.slice(previous));
+    ctx.plain += source.slice(previous);
+    ctx.pango += '</u>'.repeat(underline);
+    return ctx;
+}
+
+function appendMeasured(ctx, inner, wrapped) {
+    const base = utf8Length(ctx.plain);
+    ctx.links.push(...inner.links.map(link =>
+        ({...link, from: link.from + base, to: link.to + base})));
+    ctx.pango += wrapped;
+    ctx.plain += inner.plain;
+}
+
+// URLs we are willing to open or pass to the launcher. Everything else
+// renders as inert text (no link span is reported).
+export function safeUrl(url) {
+    const trimmed = String(url ?? '').trim();
+    if (!trimmed)
+        return null;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+        if (/^(https?|mailto|file):/i.test(trimmed))
+            return trimmed;
+        return null;
+    }
+    // No scheme: a relative path or bare domain is treated as relative.
+    return trimmed;
+}
+
+const CHECKBOX_LINE = /^(\s*)(?:-|\*|\+)\s+\[([xX ])\]/;
+const IMAGE_LINE = /^\s*!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)\s*$/;
+const FENCE_MARKER = /^\s*```(\S*)\s*$/;
+
+function imageLine(line) {
+    const match = line.match(IMAGE_LINE);
+    if (!match)
+        return null;
+    return {alt: match[1], src: match[2]};
 }
 
 // Splits a table row into its cells, or returns null when the line is not
@@ -118,7 +183,9 @@ function tableAt(lines, index) {
     return {header, aligns, rows, end};
 }
 
-function renderTable(table) {
+// Shared table layout: per-column widths and padded cells. Both the Pango
+// markup and the plain text derive from this so they never disagree.
+function tableMatrix(table) {
     const columns = table.header.length;
     // Pad short rows with empty cells; drop cells beyond the header width.
     const matrix = [table.header, ...table.rows].map(row => {
@@ -134,8 +201,6 @@ function renderTable(table) {
             width = Math.max(width, displayWidth(stripInline(row[column])));
         widths.push(width);
     }
-    // Pango tags are invisible, so cells are laid out by display width of
-    // their marker-free text and the markup is emitted around that padding.
     const padCell = (cell, width, align) => {
         const padding = width - displayWidth(stripInline(cell));
         if (align === 'right')
@@ -146,42 +211,169 @@ function renderTable(table) {
         }
         return cell + ' '.repeat(padding);
     };
-    const border = (left, junction, right) =>
-        `${left}${widths.map(width => '─'.repeat(width + 2)).join(junction)}${right}`;
+    const aligns = table.aligns;
+    return {matrix, widths, aligns, padCell};
+}
+
+function tableBorder(widths, left, junctions, right, position) {
+    return `${left}${widths.map(width => '─'.repeat(width + 2)).join(junctions[position])}${right}`;
+}
+
+function renderTable(table) {
+    const {matrix, widths, aligns, padCell} = tableMatrix(table);
+    // Pango tags are invisible, so cells are laid out by display width of
+    // their marker-free text and the markup is emitted around that padding.
     const renderRow = (cells, bold) => '│ ' + cells.map((cell, column) => {
-        const align = table.aligns[column] ?? 'left';
-        const rendered = inline(padCell(cell, widths[column], align));
+        const align = aligns[column] ?? 'left';
+        const rendered = inlineMeasured(padCell(cell, widths[column], align)).pango;
         return bold ? `<b>${rendered}</b>` : rendered;
     }).join(' │ ') + ' │';
+    const junctions = ['┬', '┼', '┴'];
     const lines = [
-        `<tt>${escapePango(border('┌', '┬', '┐'))}</tt>`,
+        `<tt>${escapePango(tableBorder(widths, '┌', junctions, '┐', 0))}</tt>`,
         `<tt>${renderRow(matrix[0], true)}</tt>`,
-        `<tt>${escapePango(border('├', '┼', '┤'))}</tt>`,
+        `<tt>${escapePango(tableBorder(widths, '├', junctions, '┤', 1))}</tt>`,
     ];
     for (let row = 1; row < matrix.length; row++)
         lines.push(`<tt>${renderRow(matrix[row], false)}</tt>`);
-    lines.push(`<tt>${escapePango(border('└', '┴', '┘'))}</tt>`);
+    lines.push(`<tt>${escapePango(tableBorder(widths, '└', junctions, '┘', 2))}</tt>`);
     return lines.join('\n');
 }
 
-function renderLine(line) {
+function renderTablePlain(table) {
+    const {matrix, widths, aligns, padCell} = tableMatrix(table);
+    const renderRow = cells => '│ ' + cells.map((cell, column) =>
+        padCell(stripInline(cell), widths[column], aligns[column] ?? 'left')).join(' │ ') + ' │';
+    const junctions = ['┬', '┼', '┴'];
+    const lines = [
+        tableBorder(widths, '┌', junctions, '┐', 0),
+        renderRow(matrix[0]),
+        tableBorder(widths, '├', junctions, '┤', 1),
+    ];
+    for (let row = 1; row < matrix.length; row++)
+        lines.push(renderRow(matrix[row]));
+    lines.push(tableBorder(widths, '└', junctions, '┘', 2));
+    return lines.join('\n');
+}
+
+function renderTextRow(line, index) {
     const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
     if (heading) {
         const size = heading[1].length <= 2 ? 'x-large' : 'large';
-        return `<span weight="bold" size="${size}">${inline(heading[2])}</span>`;
+        const inner = inlineMeasured(heading[2]);
+        return {kind: 'text', pango: `<span weight="bold" size="${size}">${inner.pango}</span>`,
+            plain: inner.plain, links: inner.links, source: index};
     }
     if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line))
-        return '────────────────';
+        return {kind: 'text', pango: '────────────────', plain: '────────────────', source: index};
     const box = line.match(/^(\s*)(?:-|\*|\+)\s+\[([xX ])\]\s+(.*)$/);
-    if (box)
-        return `${escapePango(box[1])}${box[2] === ' ' ? '☐' : '☑'}  ${inline(box[3])}`;
+    if (box) {
+        const prefix = `${escapePango(box[1])}${box[2] === ' ' ? '☐' : '☑'}  `;
+        const plainPrefix = `${box[1]}${box[2] === ' ' ? '☐' : '☑'}  `;
+        const inner = inlineMeasured(box[3]);
+        return {kind: 'text', pango: prefix + inner.pango, plain: plainPrefix + inner.plain,
+            links: shiftLinks(inner.links, utf8Length(plainPrefix)),
+            box: true, source: index};
+    }
     const bullet = line.match(/^(\s*)[-*+]\s+(.*)$/);
-    if (bullet)
-        return `${escapePango(bullet[1])}•  ${inline(bullet[2])}`;
+    if (bullet) {
+        const prefix = `${escapePango(bullet[1])}•  `;
+        const plainPrefix = `${bullet[1]}•  `;
+        const inner = inlineMeasured(bullet[2]);
+        return {kind: 'text', pango: prefix + inner.pango, plain: plainPrefix + inner.plain,
+            links: shiftLinks(inner.links, utf8Length(plainPrefix)), source: index};
+    }
     const ordered = line.match(/^(\s*)(\d{1,9})\.\s+(.*)$/);
-    if (ordered)
-        return `${escapePango(ordered[1])}${ordered[2]}.  ${inline(ordered[3])}`;
-    return inline(line);
+    if (ordered) {
+        const prefix = `${escapePango(ordered[1])}${ordered[2]}.  `;
+        const plainPrefix = `${ordered[1]}${ordered[2]}.  `;
+        const inner = inlineMeasured(ordered[3]);
+        return {kind: 'text', pango: prefix + inner.pango, plain: plainPrefix + inner.plain,
+            links: shiftLinks(inner.links, utf8Length(plainPrefix)), source: index};
+    }
+    const inner = inlineMeasured(line);
+    return {kind: 'text', pango: inner.pango, plain: inner.plain, links: inner.links, source: index};
+}
+
+function shiftLinks(links, by) {
+    if (!by)
+        return links;
+    return links.map(link => ({...link, from: link.from + by, to: link.to + by}));
+}
+
+function makeFenceRow(fence) {
+    const lang = fence.info.toLowerCase();
+    if (lang === 'dot' || lang === 'graphviz' || lang === 'graph')
+        return {kind: 'diagram', lang: 'dot', code: fence.lines.join('\n'), source: fence.source};
+    if (lang === 'mermaid')
+        return {kind: 'diagram', lang: 'mermaid', code: fence.lines.join('\n'), source: fence.source};
+    return {kind: 'block', pango: fence.lines.map(l => `<tt>${escapePango(l)}</tt>`).join('\n'),
+        plain: fence.lines.join('\n'), source: fence.source};
+}
+
+export function renderRows(source) {
+    const lines = source.replace(/\r\n/g, '\n').split('\n');
+    const rows = [];
+    let fence = null;
+    let index = 0;
+    while (index < lines.length) {
+        const line = lines[index];
+        const marker = FENCE_MARKER.exec(line);
+        if (marker) {
+            if (fence) {
+                rows.push(makeFenceRow(fence));
+                fence = null;
+            } else {
+                fence = {info: marker[1] ?? '', lines: [], source: index};
+            }
+            index += 1;
+            continue;
+        }
+        if (fence) {
+            fence.lines.push(line);
+            index += 1;
+            continue;
+        }
+        const image = imageLine(line);
+        if (image) {
+            rows.push({kind: 'image', ...image, source: index});
+            index += 1;
+            continue;
+        }
+        const table = tableAt(lines, index);
+        if (table) {
+            rows.push({kind: 'block', pango: renderTable(table),
+                plain: renderTablePlain(table), source: index});
+            index = table.end;
+            continue;
+        }
+        rows.push(renderTextRow(line, index));
+        index += 1;
+    }
+    if (fence)
+        rows.push(makeFenceRow(fence));
+    return rows;
+}
+
+function rowMarkup(row) {
+    switch (row.kind) {
+        case 'text':
+        case 'block':
+            return row.pango;
+        case 'image':
+            return escapePango(`![${row.alt}](${row.src})`);
+        case 'diagram':
+            return row.code.split('\n').map(line => `<tt>${escapePango(line)}</tt>`).join('\n');
+        default:
+            return '';
+    }
+}
+
+// Full multi-line markup, joined with newlines. Kept for tests and as a
+// last-resort fallback when actors cannot be built.
+export function renderMarkdown(source) {
+    const rows = renderRows(source);
+    return {markup: rows.map(rowMarkup).join('\n'), rows};
 }
 
 // ---- todo.txt preview ----
@@ -244,47 +436,15 @@ function renderTodoLine(line, today) {
     return parts.join(' ');
 }
 
-// One output line per source line, plus the byte offset of each output line
-// inside the markup. The caller uses the offsets to map a pointer position
-// back to a source line.
+// One row per source line. Clicking a row toggles its task; no links or
+// other hit targets exist here.
 export function renderTodo(source, today = toDateString(new Date())) {
-    const out = [];
-    const offsets = [];
-    let bytes = 0;
-    for (const line of source.replace(/\r\n/g, '\n').split('\n')) {
-        offsets.push(bytes);
-        const rendered = renderTodoLine(line, today);
-        out.push(rendered);
-        bytes += utf8Length(rendered) + 1;
-    }
-    return {markup: out.join('\n'), offsets, end: bytes};
-}
-
-export function renderMarkdown(source) {
-    const lines = source.replace(/\r\n/g, '\n').split('\n');
-    const out = [];
-    let fenced = false;
+    const rows = [];
     let index = 0;
-    while (index < lines.length) {
-        const line = lines[index];
-        if (/^\s*\`\`\`/.test(line)) {
-            fenced = !fenced;
-            index += 1;
-            continue;
-        }
-        if (fenced) {
-            out.push(`<tt>${escapePango(line)}</tt>`);
-            index += 1;
-            continue;
-        }
-        const table = tableAt(lines, index);
-        if (table) {
-            out.push(renderTable(table));
-            index = table.end;
-            continue;
-        }
-        out.push(renderLine(line));
+    for (const line of source.replace(/\r\n/g, '\n').split('\n')) {
+        const pango = renderTodoLine(line, today);
+        rows.push({kind: 'text', pango, plain: stripTags(pango), todo: true, source: index});
         index += 1;
     }
-    return out.join('\n');
+    return {rows, markup: rows.map(row => row.pango).join('\n')};
 }
