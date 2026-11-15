@@ -6,12 +6,12 @@ A RedClaw GNOME Shell extension — **Markdown Sticky Notes** — rebuilt from [
 
 - Desktop sticky notes with pastel colors, Markdown edit/preview mode, resizing and drag positioning. A note that loses focus switches to **Preview Markdown** automatically; double-click it or choose **Edit Markdown** from the menu to edit again.
 - **Pin above windows** / **Unpin note** in each note's right-click menu. Pinned notes are hosted by a separate GNOME Shell chrome layer. Unpinned notes stay below ordinary windows, like the upstream extension. New notes are created pinned by default; the **Pin new notes above windows** preference (Desktop group) turns this off.
-- Create, edit, rename or delete Markdown files anywhere in `~/notes/` (recursive) and GNOME's notes appear, update or disappear automatically. `.md`, `.markdown` and `.txt` files are followed at any depth; `.board.md` files (see **Boards**) are not notes.
-- **Boards**: folders containing a `.board.md` (Markdown with frontmatter) become recursive container windows on the desktop — the board's own Markdown renders above its child notes, which appear inside it as cards. See **Boards**.
-- The **zoom** controls (A-/A+ on the bar or **Zoom in/out** on the menu) scale everything in the note — frame, text, grip, preview and handles — from **5% to 200%**. The per-note zoom is stored in `gnome-sticky-zoom` (`todo-layout` for the TODO note); `gnome-sticky-font-size` is no longer changed by these controls. Legacy selection sizes (`gnome-sticky-sizes`) still render; the bar no longer creates new ones.
+- Create, edit, rename or delete Markdown files anywhere in `~/notes/` (recursive) and GNOME's notes appear, update or disappear automatically. `.md`, `.markdown` and `.txt` files are followed at any depth; hidden files and folders are ignored.
+- **Folder categories**: every note is an independent desktop window. Its header shows a category pill such as **(projects / 2026)**, derived from its folder path. Root-level notes have no category pill. See [Folder categories](#folder-categories).
+- The **zoom** controls (A-/A+ on the bar or **Zoom in/out** on the menu) scale only the written editor/preview content from **5% to 200%**. The frame, header, toolbar and resize handle stay fixed. The per-note zoom is stored in `gnome-sticky-zoom` (`todo-layout` for the TODO note); `gnome-sticky-font-size` is no longer changed by these controls. Legacy selection sizes (`gnome-sticky-sizes`) still render; the bar no longer creates new ones.
 - The note context menu has **Copy note**, copying the Markdown body (no frontmatter) to the clipboard.
 - **Preview links** open in the default app; **images** (`![alt](src)`, local or `http(s)` with cache) render in the preview; **dot/Graphviz and Mermaid** fenced blocks render as diagrams when the tools are installed (`dot`, or `mmdc` from `@mermaid-js/mermaid-cli`), with a code fallback and an install hint otherwise.
-- **Expiring notes**: pick a deadline from the note's context menu (**In 1 hour**, **Tomorrow 09:00**, **In 1 week**, or a custom `YYYY-MM-DD HH:MM`); the note deletes itself — permanently — after that time. The deadline persists in the frontmatter (`gnome-sticky-expires`); edit it externally and the extension follows. A small `⌛` badge shows the deadline in the note's grip. TODO and boards never expire.
+- **Expiring notes**: pick a deadline from the note's context menu (**In 1 hour**, **Tomorrow 09:00**, **In 1 week**, or a custom `YYYY-MM-DD HH:MM`); the note deletes itself — permanently — after that time. The deadline persists in the frontmatter (`gnome-sticky-expires`); edit it externally and the extension follows. A small `⌛` badge shows the deadline in the note's grip. The special TODO note never expires.
 - Task list items (`- [ ]`) toggle directly from the **Preview**, without entering edit mode — locked notes included.
 - **TODO note** mirrored to a pure [todo.txt](https://todotxt.in/blog/todo-txt-format-complete-guide) file (default `~/todo.txt`): click-to-complete, recurrence and sorting. See [TODO note](#todo-note-todotxt).
 - The opposite direction also works: new note = new file; edit = update file; delete = **permanently delete file**.
@@ -27,6 +27,7 @@ A RedClaw GNOME Shell extension — **Markdown Sticky Notes** — rebuilt from [
 - `Ctrl+B` / `Ctrl+I` / `Ctrl+U` — Bold / Italic / Underline
 - `Ctrl+Shift+X` — Strikethrough · `Ctrl+Shift+C` — inline code
 - `Ctrl+Shift+7/8/9` — numbered / bullet / checkbox lists (US and ABNT shifted glyphs `&`, `*`, `(` also work)
+- `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Ctrl+A` — Copy / Cut / Paste / Select all. Right-clicking the text opens the same editing actions.
 - `Escape` — blur to preview · `Enter` — continue list · `Backspace` — delete marker first
 
 **Focused but not editing** (e.g. locked note, or focus on the frame):
@@ -36,7 +37,7 @@ A RedClaw GNOME Shell extension — **Markdown Sticky Notes** — rebuilt from [
 - `Ctrl+Scroll` — zoom out / in (±10%, 5–200%)
 - `Ctrl+Delete` — delete the note (permanent)
 
-**Colors:** the note color swatches now include a final `+` ball for an arbitrary color — type `#RRGGBB` (or `#RGB`), see a live preview and apply with Enter or the ✓ button. It is stored in `gnome-sticky-color-custom`; choosing a preset swatch clears it. Dark custom colors switch the text to a light ink automatically. Boards have the same picker.
+**Colors:** the note color swatches now include a final `+` ball for an arbitrary color — type `#RRGGBB` (or `#RGB`), see a live preview and apply with Enter or the ✓ button. It is stored in `gnome-sticky-color-custom`; choosing a preset swatch clears it. Dark custom colors switch the text to a light ink automatically.
 
 ## Markdown support
 
@@ -53,7 +54,7 @@ The note body is plain Markdown and stays that way. The formatting bar edits the
 - Fenced code blocks with info `dot`, `graphviz` or `mermaid` render as diagrams in the preview when the matching tool is installed (dot/Graphviz, or `mmdc`). Otherwise the block renders as code with a one-line install hint, and the preview never breaks. The note's file always keeps the original source — images and diagrams are preview-only.
 - The frontmatter is never shown in the note body, in either mode.
 
-The **zoom** controls (A-/A+ on the bar, or **Zoom in/out** in the context menu) scale the **whole note** — frame, text, grip, preview and handles — from 5% to 200%, proportional to everything. Unlike the retired font-size controls, zoom does not touch the font-size paths: the base font is derived from the zoom factor, and the note stores `gnome-sticky-zoom`. Notes saved by earlier versions with visual styles (`gnome-sticky-spans`) keep rendering them; the bar does not create new ones.
+The **zoom** controls (A-/A+ on the bar, **Zoom in/out** in the context menu, or `Ctrl+Scroll` outside editing) scale only the **written content** in the editor/preview from 5% to 200%. The frame geometry, grip/header, toolbar, buttons and resize handle remain unchanged. Unlike the retired font-size controls, zoom does not touch the font-size paths: the base font is derived from the zoom factor, and the note stores `gnome-sticky-zoom`. Notes saved by earlier versions with visual styles (`gnome-sticky-spans`) keep rendering them; the bar does not create new ones.
 
 ## Expiring notes
 
@@ -63,20 +64,17 @@ A **soon-to-be-gone note** — set an expiration from the note's context menu:
 - The deadline persists in the frontmatter (`gnome-sticky-expires`); edit the file externally and the extension follows it.
 - When the deadline passes, the note is **deleted permanently** — same semantics as the **Delete** menu action (file removed, no undo, no trash).
 - A small `⌛` badge with the date/time shows the deadline in the note's grip; it disappears with the note.
-- The TODO note and boards never expire; locked notes keep their deadline too.
+- The special TODO note never expires; locked notes keep their deadline too.
 
-## Boards
+## Folder categories
 
-A **board** is a folder in `~/notes/` that contains a `.board.md` file — an ordinary Markdown document with frontmatter. The folder's notes (and its nested boards) render **inside** a single container window on the desktop instead of as separate desktop notes:
+Folders and subfolders under `~/notes/` define categories; they do not create container windows or need marker files. For example, `~/notes/projects/2026/idea.md` appears as an independent note with **(projects / 2026)** in its header. `~/notes/idea.md` has no category pill. Long categories are ellipsized to fit the header; their full path remains available to accessibility tools.
 
-- The `.board.md` body is rendered at the top of the board, above the children — it is a freeform Markdown space for the board's description.
-- Child notes (`.md`, `.markdown`, `.txt`) directly inside the folder appear as cards inside the board, movable and resizable like ordinary notes. Boards nest without limits (`projetos/`, `projetos/2026/`, `projetos/2026/roadmaps/`).
-- Frontmatter in `.board.md` stores the board window itself (absolute position and size, `title`, `gnome-sticky-color`, `gnome-sticky-zoom`, `pinned`, `locked`, `workspace`, `collapsed`). Each child's own `x/y` is **relative to its board** — moving a board moves everything inside it without rewriting a single child file. Unrelated frontmatter is preserved.
-- `.board.md` files never become notes. A `.board.md` at the root of `~/notes/` (not inside a folder) is inert.
-- Create boards from the top-bar menu (**New board**), from a board menu (**New note in board**, **New board in board**), or simply by creating the folder and file yourself — the extension picks the board up automatically.
-- A board's menu has **Unboard**, which removes only the `.board.md`: every child rises one level in place (or to the desktop), with position and content preserved.
-- To delete a **board entirely**, use the top-bar menu (**Delete all notes → Permanently delete a board**): the board folder is removed **recursively** — notes, nested boards and its `.board.md` die with it. **Permanently delete every Markdown note** (same submenu) deletes all notes everywhere while keeping boards. Both are permanent.
-- Children and boards can be restricted to a workspace, hidden with **Show/Hide notes**, and mixed freely with ordinary root notes.
+- Create or rename folders with your file manager. Moving a note between folders updates its category automatically; the category is not stored in frontmatter.
+- New notes from the top-bar menu start at the root. Duplicating a categorized note keeps the copy in that folder.
+- Each note keeps its own desktop position, size, pin/lock and workspace. Clicking or focusing it never reparents it into a folder window. Stored `x/y` coordinates are interpreted as desktop coordinates and clamped to a visible monitor.
+- Legacy `.board.md` files are ignored like other hidden files. They are not deleted, rewritten or displayed. Notes within their folders still load normally.
+- **Delete all notes → Permanently delete every Markdown note** deletes the note files, not their category folders or unrelated hidden metadata. Deletion is permanent; the special TODO file is unaffected.
 
 ## Install / update
 
@@ -153,7 +151,7 @@ The extension mirrors a plain [todo.txt](https://todotxt.in/blog/todo-txt-format
 - **Sort tasks** (right-click menu) reorders the file in place: active tasks by priority then creation date, completed tasks at the end, blank lines where they are.
 - **Layout and appearance** (position, size, color, zoom, pin/lock, workspace) live in **GSettings** under `todo-layout` — never in the file — and survive session restarts.
 - **Cannot be deleted or duplicated from the extension.** Delete the file yourself to close the note; **TODO note** in the menu recreates it. External edits update the note and vice versa; the filesystem wins on conflicts.
-- `.txt` files in `~/notes/` still do not become notes.
+- Ordinary `.txt` files inside `~/notes/` are Markdown notes. Only the single path configured as `todo-file` (default `~/todo.txt`) receives the special todo.txt parser and task behavior.
 
 The editor scaffolds new tasks with today's date when you press Enter on a task line; Enter on an empty scaffold clears it. Backspace at the end of a scaffold peels the date, then the checkbox. Task lines pasted from elsewhere work like any other task for the preview toggle; inline checkbox clicks exist on lines loaded from the file or scaffolded with Enter.
 
@@ -162,11 +160,15 @@ The editor scaffolds new tasks with today's date when you press Enter on a task 
 ```bash
 npm test
 npm run lint:syntax
+gjs -m tests/filesync-gjs.test.js
+bash tests/install.test.sh
 bash -n install.sh tools/pack.sh
 ./tools/pack.sh
 ```
 
 Run actual end-to-end tests inside GNOME Shell, including pinned notes above multiple application windows, Wayland input and focus, overview, monitor changes, the folder monitor and directory rename/delete behavior. Static CI tests cannot replace that runtime validation.
+
+For a reproducible local smoke test with a headless renderer, run `sh tests/shell-smoke.sh` (GNOME Shell 50/51, GJS, dconf and Node required). It starts a separate Shell with disposable HOME, settings and note fixtures under `/tmp/opencode/`, asserts real mounted notes, category layout, virtual-key clipboard operations and teardown, and saves a JSON report, screenshot and logs there. It never reads or modifies your notes or enables test extensions in your active desktop session. This does not replace acceptance in your own desktop session after installation.
 
 On Wayland, log out and back in to load updated extension JavaScript. Logs:
 

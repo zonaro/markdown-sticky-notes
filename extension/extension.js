@@ -5,22 +5,20 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {NotesMenu} from './menu.js';
-import {NoteBoard} from './notes.js';
+import {NotesController} from './notes.js';
 
 const BEHAVIOR_KEYS = [
     'stick',
     'sink-unfocused',
     'note-width',
     'note-height',
-    'max-width',
-    'max-height',
 ];
 
 export default class StickyNotesExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
-        this._board = new NoteBoard(this._settings);
-        this._menu = new NotesMenu(this.path, this._board, () => this.openPreferences());
+        this._notes = new NotesController(this._settings);
+        this._menu = new NotesMenu(this.path, this._notes, () => this.openPreferences());
 
         this._bindKeys();
         this._watchSettings();
@@ -32,8 +30,8 @@ export default class StickyNotesExtension extends Extension {
         this._settings.disconnectObject(this);
         this._menu.destroy();
         this._menu = null;
-        this._board.destroy();
-        this._board = null;
+        this._notes.destroy();
+        this._notes = null;
         this._settings = null;
     }
 
@@ -42,10 +40,10 @@ export default class StickyNotesExtension extends Extension {
         const mode = Shell.ActionMode.NORMAL;
         Main.wm.addKeybinding('new-note', this._settings, flags, mode, () => {
             const [x, y] = pointerCoords();
-            this._board.create([x, y]);
+            this._notes.create([x, y]);
         });
         Main.wm.addKeybinding('toggle-notes', this._settings, flags, mode, () => {
-            this._board.toggle();
+            this._notes.toggle();
         });
     }
 

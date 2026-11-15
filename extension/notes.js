@@ -2,8 +2,10 @@ import Clutter from 'gi://Clutter';
 import Cogl from 'gi://Cogl';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Gdk from 'gi://Gdk';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import Pango from 'gi://Pango';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -48,18 +50,29 @@ import {
     freshOrigin,
     normalizeSize,
     normalizeZoom,
-    normalizeHexColor,
     hexIsDark,
     zoomFont,
     parseExpires,
     formatExpires,
     expiresToFrontmatter,
+    categoryFromRelpath,
+    categoryPartsFromRelpath,
 } from './model.js';
+import {resolveNameToColor} from './name-to-color.js';
+import {
+    compatibleApps,
+    contentTypesForFilename,
+    launchExternalApp,
+} from './external-editor.js';
 import {DesktopLayer, PinnedLayer} from './layer.js';
-import {NoteFiles, expandNotePath} from './filesync.js';
+import {NoteFiles, expandNotePath, normalizeRelpath} from './filesync.js';
 import {t} from './i18n.js';
 import {renderMarkdown, renderTodo} from './markdown-preview.js';
-import {writeDocument} from './document.js';
+import {
+    isImageNoteFormat,
+    noteFormatForFilename,
+} from './note-format.js';
+import {renderPlainText, renderSafeHtml} from './safe-preview.js';
 import {
     displayLine,
     parseTodoLine,
@@ -79,10 +92,9 @@ import {NoteRibbon} from './ribbon.js';
 const BUTTON_PRIMARY = 1;
 const BUTTON_SECONDARY = 3;
 const HANDLE = 18;
-const BOARD_MIN_W = 280;
-const BOARD_MIN_H = 232;
-const BOARD_BODY_H = 128;
-const BOARD_HEADER_H = 34;
+// Note header (grip) height and the close-button hit area.
+const HEADER_H = 24;
+const CLOSE_SIZE = 18;
 // Extra pixels around a checkbox glyph that still count as a hit.
 const BOX_SLOP = 3;
 const MOVE_KEYS = new Set([
@@ -117,7 +129,7 @@ function color4(r, g, b, a) {
     return color;
 }
 
-export class NoteBoard {
+export class NotesController {
     constructor(settings) {
         this._settings = settings;
         this._ready = false;
@@ -136,7 +148,6 @@ export class NoteBoard {
         this._focused = null;
         this._overview = Main.overview.visible;
         this._byFilename = new Map();
-        this._boards = new Map();
         this._files = null;
         this._todoFile = null;
         this._todoFiles = null;
@@ -147,6 +158,8 @@ export class NoteBoard {
         this._pinnedLayer = new PinnedLayer();
         this._layer = this._desktop.actor;
         this._menuManager = new PopupMenu.PopupMenuManager(this._layer);
+        // Follow the desktop's window-button side for the note close button.
+        this._closeOnLeft = this._readCloseButtonSide();
 
         global.stage.connectObject(
             'captured-event', (_stage, event) => this._onCaptured(event),
@@ -192,7 +205,6 @@ export class NoteBoard {
         global.workspace_manager.disconnectObject(this);
         for (const view of [...this._views.values()])
             this._drop(view);
-        this._boards.clear();
         this._byFilename.clear();
         this._files = null;
         this._todoFile = null;
@@ -204,26 +216,8 @@ export class NoteBoard {
         this._layer = null;
     }
 
-    create(at, prefix = '') {
-        this._whenReady(() => this._create(at, prefix));
-    }
-
-    createBoard() {
-        this._whenReady(() => this._createBoard(null));
-    }
-
-    // Live boards for the panel menu, with display titles.
-    boards() {
-        return [...this._boards.values()]
-            .map(board => ({key: board.key, title: board.note.title}));
-    }
-
-    // Permanently delete a board folder (recursively). The file monitor then
-    // removes the notes and the board itself from the UI.
-    deleteBoard(dirRel) {
-        if (!this._boards.has(dirRel))
-            return false;
-        return this._files?.removeFolder(dirRel) ?? false;
+    create(at) {
+        this._whenReady(() => this._create(at));
     }
 
     toggle() {
@@ -248,7 +242,6 @@ export class NoteBoard {
         return {
             hidden: this._store.hidden === true,
             notes: this._store.notes.filter(note => (note.kind ?? 'note') === 'note').length,
-            boards: this._boards.size,
         };
     }
 
@@ -271,13 +264,18 @@ export class NoteBoard {
         this._ready = true;
         this._files = new NoteFiles(
             (filename, document) => this._upsertFile(filename, document),
-            filename => this._removeFile(filename),
-            null,
-            present => this._onBoards(present));
+            filename => this._removeFile(filename));
+        console.log('Sticky Notes: _load calling _files.start()');
         this._files.start();
+        console.log('Sticky Notes: _files.start() returned');
         this._loadTodo();
         this._applyVisibility();
         this._flushQueue();
+        // One startup line per session: it is the acceptance evidence that the
+        // scan reached the desktop, and the first thing to read in a bug report.
+        const loaded = [...this._views.values()]
+            .filter(view => view.note.kind === 'note').length;
+        console.log(`Sticky Notes: loaded ${loaded} note(s) from ${this._files.directory}`);
         this._sweepExpiredNotes();
         this._expirySweepId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
             this._sweepExpiredNotes();
@@ -321,341 +319,6 @@ export class NoteBoard {
             this._store.notes.splice(index, 1);
         this._drop(view);
     }
-    // --- Boards ---
-    // Boards are folders with a .board.md inside. The .board.md is a
-    // Markdown document with frontmatter: it configures the board window and
-    // carries the board's own Markdown body, which renders above the child
-    // notes inside the board. Boards nest without limits.
-    _boardKeyForRelpath(relpath) {
-        if (typeof relpath !== 'string' || !relpath.includes('/'))
-            return null;
-        const segments = relpath.split('/');
-        for (let end = segments.length - 1; end >= 1; end--) {
-            const key = segments.slice(0, end).join('/');
-            if (this._boards.has(key))
-                return key;
-        }
-        return null;
-    }
-
-    // Absolute stage position of a (possibly nested) board frame.
-    _boardStagePos(board) {
-        if (board?.view) {
-            const [ok, x, y] = board.view.frame.get_transformed_position();
-            if (ok)
-                return [x, y];
-        }
-        return [board?.note.x ?? 0, board?.note.y ?? 0];
-    }
-
-    _noteAbs(view) {
-        const note = view.note;
-        if (note.board) {
-            const board = this._boards.get(note.board);
-            if (board?.view) {
-                const [bx, by] = this._boardStagePos(board);
-                return {x: bx + note.x, y: by + note.y};
-            }
-        }
-        return {x: note.x, y: note.y};
-    }
-
-    // Recompute board membership of everything after the set of boards
-    // changed: files may have been created before their board appeared, or
-    // boards may have appeared/disappeared around them.
-    _reparentBoards() {
-        let moved = false;
-        for (const [key, board] of [...this._boards]) {
-            const parent = this._boardKeyForRelpath(key);
-            if ((board.parent ?? null) === parent)
-                continue;
-            moved = true;
-            const [absX, absY] = this._boardStagePos(board);
-            board.parent = parent;
-            board.note.parent = parent;
-            if (parent) {
-                const parentBoard = this._boards.get(parent);
-                const [px, py] = this._boardStagePos(parentBoard);
-                board.note.x = Math.round(absX - px);
-                board.note.y = Math.round(absY - py);
-            } else {
-                board.note.x = Math.round(absX);
-                board.note.y = Math.round(absY);
-            }
-            const previousParent = board.view.frame.get_parent();
-            previousParent?.remove_child(board.view.frame);
-            this._moveBoardToParent(board);
-            this._layout(board.view);
-        }
-        for (const view of [...this._views.values()]) {
-            if (view.note.kind !== 'note')
-                continue;
-            const target = this._boardKeyForRelpath(view.note.filename);
-            if ((view.note.board ?? null) === target)
-                continue;
-            moved = true;
-            const abs = this._noteAbs(view);
-            view.note.board = target;
-            if (target) {
-                const board = this._boards.get(target);
-                if (!board)
-                    continue;
-                const [bx, by] = this._boardStagePos(board);
-                view.note.x = Math.round(abs.x - bx);
-                view.note.y = Math.round(abs.y - by);
-                this._attachChild(view, board);
-            } else {
-                view.frame.get_parent()?.remove_child(view.frame);
-                this._layerFor(view.note).add_child(view.frame);
-                view.note.x = Math.round(abs.x);
-                view.note.y = Math.round(abs.y);
-                this._layout(view);
-                this._paint(view);
-            }
-        }
-        if (!moved)
-            return;
-        this._clampAll();
-        this._applyVisibility();
-        this._scheduleSave();
-    }
-
-    _attachChild(view, board) {
-        const frame = view.frame;
-        if (frame.get_parent() !== board.view.host)
-            board.view.host.add_child(frame);
-        this._layout(view);
-        this._paint(view);
-    }
-
-    _moveBoardToParent(board) {
-        const parentBoard = board.parent ? this._boards.get(board.parent) : null;
-        if (parentBoard?.view) {
-            const frame = board.view.frame;
-            if (frame.get_parent() !== parentBoard.view.host)
-                parentBoard.view.host.add_child(frame);
-            return;
-        }
-        this._layerFor(board.note).add_child(board.view.frame);
-    }
-
-    _onBoards(present) {
-        for (const key of [...this._boards.keys()]) {
-            if (!present.has(key))
-                this._unboard(key);
-        }
-        for (const [key, entry] of present) {
-            const existing = this._boards.get(key);
-            if (existing) {
-                if (existing.raw === entry.raw)
-                    continue;
-                existing.raw = entry.raw;
-                existing.document = entry.document;
-                this._applyBoardDocument(existing, entry.document);
-                continue;
-            }
-            this._mountBoard(key, entry);
-        }
-        this._reparentBoards();
-    }
-
-    // Apply frontmatter of a changed .board.md to the live board.
-    _applyBoardDocument(board, document) {
-        const metadata = document.metadata ?? {};
-        const note = board.note;
-        for (const key of ['x', 'y', 'w', 'h', 'expanded_h', 'color', 'workspace']) {
-            if (Number.isInteger(metadata[key]))
-                note[key] = metadata[key];
-        }
-        if (Number.isInteger(metadata.zoom))
-            note.zoom = normalizeZoom(metadata.zoom);
-        if (typeof metadata.pinned === 'boolean')
-            note.pinned = metadata.pinned;
-        if (typeof metadata.locked === 'boolean')
-            note.locked = metadata.locked;
-        if (typeof metadata.custom_color === 'string')
-            note.custom_color = metadata.custom_color;
-        if (typeof metadata.collapsed === 'boolean')
-            note.collapsed = metadata.collapsed;
-        const title = this._boardTitle(document.header, board.key.split('/').pop());
-        if (title !== note.title)
-            note.title = title;
-        note.boardBody = document.body ?? '';
-        this._refreshBoardBody(board);
-        this._paint(board.view);
-        this._layout(board.view);
-        this._applyVisibility();
-    }
-
-    _boardTitle(header, fallback) {
-        for (const line of header ?? []) {
-            const match = /^\s*title\s*:\s*(.*)$/.exec(line);
-            if (match) {
-                const value = match[1].trim().replace(/^"(.*)"$/, '$1');
-                if (value)
-                    return value;
-            }
-        }
-        return fallback;
-    }
-
-    _boardBounds(board) {
-        return {w: board.note.w, h: board.note.h};
-    }
-
-    _boardChildBounds(board) {
-        return {x: 0, y: 0, w: board.note.w, h: board.note.h};
-    }
-
-    _childOrigin(board, childW, childH) {
-        const header = Math.round(34 * normalizeZoom(board.note.zoom ?? 100) / 100);
-        const body = (board.note.boardBody ?? '').trim() ? 132 : 0;
-        const area = {
-            x: 10,
-            y: header + body + 10,
-            w: Math.max(48, board.note.w - 20),
-            h: Math.max(24, board.note.h - header - body - 20),
-        };
-        const obstacles = [];
-        for (const view of this._views.values()) {
-            if (view.note.kind === 'note' && view.note.board === board.key)
-                obstacles.push([view.note.x, view.note.y, view.note.w, view.note.h]);
-        }
-        // Nested boards are obstacles too.
-        for (const other of this._boards.values()) {
-            if (other.parent === board.key)
-                obstacles.push([other.note.x, other.note.y, other.note.w, other.note.h]);
-        }
-        const [x, y] = freshOrigin(obstacles, [area], childW, childH, null, null);
-        return [x, y];
-    }
-
-    _defaultBoardNote(key, entry) {
-        const parentKey = this._boardKeyForRelpath(key);
-        const name = key.split('/').pop();
-        const metadata = entry.document.metadata ?? {};
-        const w = Number.isInteger(metadata.w) ? metadata.w : 420;
-        const h = Number.isInteger(metadata.h) ? metadata.h : 300;
-        let x = Number.isInteger(metadata.x) ? metadata.x : null;
-        let y = Number.isInteger(metadata.y) ? metadata.y : null;
-        if (x === null || y === null) {
-            if (parentKey) {
-                x = 20;
-                y = 60;
-            } else {
-                const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
-                [x, y] = freshOrigin(obstacles, this._workAreas(), w, h, null, null);
-            }
-        }
-        const note = {
-            id: this._store.next_id++,
-            kind: 'board',
-            boardKey: key,
-            parent: parentKey ?? null,
-            filename: `${key}/.board.md`,
-            title: this._boardTitle(entry.document.header, name),
-            x, y, w, h,
-            expanded_h: Number.isInteger(metadata.expanded_h) ? metadata.expanded_h : h,
-            color: ((Number.isInteger(metadata.color) ? metadata.color : this._boards.size) + PALETTE.length) % PALETTE.length,
-            size: 13, collapsed: metadata.collapsed === true, locked: metadata.locked === true,
-            pinned: metadata.pinned === true,
-            zoom: normalizeZoom(metadata.zoom),
-            custom_color: typeof metadata.custom_color === 'string' ? metadata.custom_color : null,
-            workspace: Number.isInteger(metadata.workspace) ? metadata.workspace : this._workspace(),
-            text: '', spans: [], sizes: [],
-            boardBody: entry.document.body ?? '',
-        };
-        return note;
-    }
-
-    _mountBoard(key, entry) {
-        const note = this._defaultBoardNote(key, entry);
-        const board = {
-            key,
-            parent: note.parent,
-            note,
-            view: null,
-            raw: entry.raw,
-            document: entry.document,
-        };
-        this._boards.set(key, board);
-        board.view = this._buildBoardView(board);
-        this._views.set(note.id, board.view);
-        this._byFilename.set(note.filename, board.view);
-        this._moveBoardToParent(board);
-        this._layout(board.view);
-        this._paint(board.view);
-        this._applyVisibility();
-        return board;
-    }
-
-    // Save one board back to its .board.md. Geometry and appearance live in
-    // the file alongside the body; unrelated frontmatter is preserved.
-    _saveBoard(board) {
-        const note = board.note;
-        const document = writeDocument({
-            id: note.id, x: note.x, y: note.y, w: note.w, h: note.h,
-            expanded_h: note.expanded_h ?? note.h, color: note.color, size: 13,
-            workspace: note.workspace, pinned: note.pinned === true, locked: note.locked === true,
-            collapsed: note.collapsed === true, zoom: normalizeZoom(note.zoom ?? 100),
-            text: note.boardBody ?? '',
-        }, board.raw ?? '');
-        const ok = this._files.saveBoard(board.key, document);
-        if (ok)
-            board.raw = document;
-        return ok;
-    }
-
-    // Unmount a board. The children (notes and nested boards) move to the
-    // board's own parent — or to the desktop when the unboarded board was
-    // at the root — keeping every absolute on-screen position they have.
-    // The .board.md file is never touched here.
-    _unboard(key) {
-        const board = this._boards.get(key);
-        if (!board)
-            return;
-        const [absX, absY] = this._boardStagePos(board);
-        const newParent = board.parent ?? null;
-        const parentBoard = newParent ? this._boards.get(newParent) : null;
-        const [px, py] = parentBoard?.view ? this._boardStagePos(parentBoard) : [0, 0];
-        // Nested boards first: they keep their on-screen place and land in
-        // the freed slot of the parent board (or the desktop).
-        for (const other of [...this._boards.values()]) {
-            if (other === board || other.parent !== key)
-                continue;
-            other.parent = newParent;
-            other.note.parent = newParent;
-            other.note.x = Math.round(absX + other.note.x - (parentBoard ? px : 0));
-            other.note.y = Math.round(absY + other.note.y - (parentBoard ? py : 0));
-            const frame = other.view.frame;
-            frame.get_parent()?.remove_child(frame);
-            this._moveBoardToParent(other);
-            this._layout(other.view);
-        }
-        for (const childView of [...this._views.values()]) {
-            if (childView.note.kind !== 'note' || childView.note.board !== key)
-                continue;
-            const abs = {x: absX + childView.note.x, y: absY + childView.note.y};
-            childView.note.board = newParent;
-            childView.frame.get_parent()?.remove_child(childView.frame);
-            if (parentBoard?.view) {
-                childView.note.x = Math.round(abs.x - px);
-                childView.note.y = Math.round(abs.y - py);
-                this._attachChild(childView, parentBoard);
-            } else {
-                childView.note.x = Math.round(abs.x);
-                childView.note.y = Math.round(abs.y);
-                this._layerFor(childView.note).add_child(childView.frame);
-                this._layout(childView);
-                this._paint(childView);
-            }
-        }
-        this._boards.delete(key);
-        this._drop(board.view);
-        this._reparentBoards();
-        this._scheduleSave();
-    }
-
     _defaultTodoNote(filename) {
         const w = this._settings.get_int('note-width');
         const h = this._settings.get_int('note-height');
@@ -667,7 +330,7 @@ export class NoteBoard {
             filename,
             x, y, w, h, expanded_h: h,
             color: this._store.notes.length % PALETTE.length,
-            size: 13, collapsed: false, locked: false, pinned: false,
+            size: 13, locked: false, pinned: false,
             zoom: 100,
             custom_color: null,
             expires: null,
@@ -754,7 +417,7 @@ export class NoteBoard {
         try {
             const file = Gio.File.new_for_path(this._todoFile);
             if (!file.query_exists(null)) {
-                file.replace_contents(new TextEncoder().encode(''), null, false,
+                file.replace_contents(new TextEncoder().encode('\n'), null, false,
                     Gio.FileCreateFlags.REPLACE_DESTINATION, null);
             }
         } catch (error) {
@@ -776,24 +439,26 @@ export class NoteBoard {
         return {
             id: this._store.next_id++,
             kind: 'note',
+            format: noteFormatForFilename(filename) ?? 'markdown',
             filename, x, y, w, h, expanded_h: h,
             color: this._store.notes.length % PALETTE.length,
             size: 13,
-            collapsed: false,
             locked: false,
             zoom: 100,
             custom_color: null,
             expires: null,
             pinned: pinNew,
-            board: this._boardKeyForRelpath(filename),
             text: '', spans: [], sizes: [], workspace: this._workspace(),
         };
     }
 
     _upsertFile(filename, document) {
+        console.log(`Sticky Notes: _upsertFile ${filename}, view exists: ${!!this._byFilename.get(filename)}`);
         const view = this._byFilename.get(filename);
         const note = view ? view.note : this._defaultNote(filename);
         note.kind = 'note';
+        note.format = document.format ?? noteFormatForFilename(filename) ?? 'markdown';
+        note.sourcePath = typeof document.path === 'string' ? document.path : null;
         const metadata = document.metadata;
         if (!view && Number.isInteger(metadata.id) && metadata.id > 0 &&
             !this._views.has(metadata.id)) {
@@ -807,6 +472,9 @@ export class NoteBoard {
         }
         if (Number.isInteger(metadata.zoom))
             note.zoom = normalizeZoom(metadata.zoom);
+        note.custom_color = typeof metadata.custom_color === 'string'
+            ? metadata.custom_color
+            : null;
         note.expires = typeof metadata.expires === 'string' ? metadata.expires : null;
         for (const key of ['locked', 'pinned']) {
             if (typeof metadata[key] === 'boolean')
@@ -822,6 +490,11 @@ export class NoteBoard {
             view.loading = true;
             try {
                 view.text.text = note.text;
+                if (isImageNoteFormat(note.format)) {
+                    view.previewMode = true;
+                    view.text.visible = false;
+                    view.preview.visible = true;
+                }
                 this._refreshPreview(view);
                 this._moveToLayer(view);
                 this._layout(view);
@@ -835,7 +508,7 @@ export class NoteBoard {
             this._mount(note, false);
         }
         // External files without the extension's metadata acquire defaults.
-        if (!document.hasFrontmatter || !Number.isInteger(metadata.id))
+        if (!document.hasMetadata || !Number.isInteger(metadata.id))
             this._scheduleSave();
     }
 
@@ -860,13 +533,6 @@ export class NoteBoard {
                 this._files?.save(note);
             }
         }
-        for (const board of this._boards.values()) {
-            try {
-                this._saveBoard(board);
-            } catch (error) {
-                console.error(`Sticky Notes: could not save board ${board.key}: ${error}`);
-            }
-        }
     }
 
     _scheduleSave() {
@@ -883,6 +549,24 @@ export class NoteBoard {
 
     _workspace() {
         return global.workspace_manager.get_active_workspace_index();
+    }
+
+    // GNOME button-layout, e.g. 'appmenu:minimize,maximize,close'.
+    // The left of the colon is the left group; close usually sits on the right.
+    _readCloseButtonSide() {
+        try {
+            // Check if the schema exists before creating Settings object
+            const schemaSource = Gio.SettingsSchemaSource.get_default();
+            if (!schemaSource.lookup('org.gnome.desktop.wm.preferences', true))
+                return false;
+            const settings = new Gio.Settings({schema_id: 'org.gnome.desktop.wm.preferences'});
+            const layout = settings.get_string('button-layout');
+            const [left] = String(layout).split(':');
+            return (left || '').split(',').map(part => part.trim()).includes('close');
+        } catch (error) {
+            console.debug(`Sticky Notes: cannot read button-layout: ${error}`);
+            return false;
+        }
     }
 
     _workAreas() {
@@ -909,33 +593,23 @@ export class NoteBoard {
     }
 
     _limits() {
-        return [this._settings.get_int('max-width'), this._settings.get_int('max-height')];
+        // 90% of the primary monitor work area (no user-configurable cap).
+        const primary = Main.layoutManager.primaryIndex;
+        const monitors = Main.layoutManager.monitors;
+        if (primary >= 0 && primary < monitors.length) {
+            const area = Main.layoutManager.getWorkAreaForMonitor(primary);
+            return [Math.round(area.width * 0.9), Math.round(area.height * 0.9)];
+        }
+        // Fallback to first available monitor
+        for (const i of monitors) {
+            const area = Main.layoutManager.getWorkAreaForMonitor(i);
+            return [Math.round(area.width * 0.9), Math.round(area.height * 0.9)];
+        }
+        // Ultimate fallback (should never happen)
+        return [1920, 1080];
     }
 
     _clampNote(note) {
-        if (note.kind === 'board') {
-            const [x, y, w, h] = clamp(
-                note.x, note.y, note.w, note.h, this._workAreas(), BOARD_MIN_W, BOARD_MIN_H, 3000, 3000);
-            note.x = x;
-            note.y = y;
-            note.w = w;
-            note.h = h;
-            note.expanded_h = note.expanded_h && note.expanded_h > BOARD_MIN_H ? note.expanded_h : h;
-            return;
-        }
-        if (note.board) {
-            const board = this._boards.get(note.board);
-            if (board) {
-                const maxW = Math.max(MIN_W, board.note.w - 8);
-                const maxH = Math.max(MIN_H, board.note.h - 8);
-                note.w = Math.min(Math.max(note.w, MIN_W), maxW);
-                note.h = Math.min(Math.max(note.h, MIN_H), maxH);
-                note.x = Math.min(Math.max(note.x, 0), Math.max(0, board.note.w - note.w));
-                note.y = Math.min(Math.max(note.y, 0), Math.max(0, board.note.h - note.h));
-                note.expanded_h = note.h;
-                return;
-            }
-        }
         const [maxW, maxH] = this._limits();
         const [x, y, w, h] = clamp(
             note.x, note.y, note.w, note.h, this._workAreas(), MIN_W, MIN_H, maxW, maxH);
@@ -974,13 +648,31 @@ export class NoteBoard {
         const space = this._workspace();
         for (const view of this._views.values()) {
             const onSpace = stick || view.note.workspace === space;
-            const parent = view.note.board ? this._boards.get(view.note.board) : null;
-            const parentHidden = parent ? parent.note.collapsed === true : false;
-            view.frame.visible = show && onSpace && !parentHidden;
+            view.frame.visible = show && onSpace;
         }
     }
 
-    _create(at, prefix = '') {
+    // Return a sorted array of unique category paths from all notes.
+    // Each category is a string like "pasta/subpasta" (slash-separated).
+    _getAllCategories() {
+        const categories = new Set();
+        for (const note of this._store.notes) {
+            if ((note.kind ?? 'note') !== 'note')
+                continue;
+            const parts = categoryPartsFromRelpath(note.filename);
+            if (!parts.length)
+                continue;
+            // Add each level: "a", "a/b", "a/b/c"
+            let current = '';
+            for (const part of parts) {
+                current = current ? `${current}/${part}` : part;
+                categories.add(current);
+            }
+        }
+        return [...categories].sort((a, b) => a.localeCompare(b));
+    }
+
+    _create(at) {
         if (this._overview)
             Main.overview.hide();
         if (this._store.hidden) {
@@ -988,28 +680,20 @@ export class NoteBoard {
             this._settings.set_boolean('notes-hidden', false);
             this._applyVisibility();
         }
-        const board = prefix ? this._boards.get(prefix.replace(/\/$/, '')) : null;
         const [maxW, maxH] = this._limits();
         const w = Math.min(this._settings.get_int('note-width'), maxW);
         const h = Math.min(this._settings.get_int('note-height'), maxH);
         const areas = this._workAreas();
-        const obstacles = this._store.notes
-            .filter(note => (note.board ?? null) === (board?.key ?? null))
-            .map(note => [note.x, note.y, note.w, note.h]);
+        const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
         const prefer = this._focused ? [this._focused.note.x, this._focused.note.y] : null;
-        let x;
-        let y;
-        if (board?.view) {
-            [x, y] = this._childOrigin(board, w, h);
-        } else {
-            [x, y] = freshOrigin(obstacles, areas, w, h, at, prefer);
-        }
+        const [x, y] = freshOrigin(obstacles, areas, w, h, at, prefer);
         const id = this._store.next_id;
         this._store.next_id += 1;
         const note = {
             id,
             kind: 'note',
-            filename: this._files.newFilename(prefix),
+            format: 'markdown',
+            filename: this._files.newFilename(),
             pinned: this._settings.get_boolean('pin-new-notes'),
             x,
             y,
@@ -1018,12 +702,10 @@ export class NoteBoard {
             expanded_h: h,
             color: this._store.notes.length % PALETTE.length,
             size: 13,
-            collapsed: false,
             locked: false,
             zoom: 100,
             custom_color: null,
             expires: null,
-            board: board?.key ?? null,
             text: '',
             spans: [],
             sizes: [],
@@ -1044,6 +726,8 @@ export class NoteBoard {
         this._scheduleSave();
     }
 
+    // Delete removes the note's source file and its owned sidecar, then drops
+    // the view. The close button in the note header uses this same path.
     _delete(view) {
         // The TODO note is never deleted by the extension: the file may be
         // shared with other todo.txt tools. Deleting the file removes the note.
@@ -1083,16 +767,10 @@ export class NoteBoard {
         this._views.set(note.id, view);
         this._byFilename.set(note.filename, view);
         this._desktop.seat();
-        const board = note.board ? this._boards.get(note.board) : null;
-        if (board?.view)
-            this._attachChild(view, board);
-        else
-            this._layerFor(note).add_child(view.frame);
+        this._layerFor(note).add_child(view.frame);
         this._layout(view);
         this._paint(view);
         this._applyVisibility();
-        // The panel menu still owns the pointer grab inside its activate
-        // handler. Focusing on the next idle lets that grab finish first.
         if (focus)
             this._focusLater(view);
         return view;
@@ -1111,6 +789,8 @@ export class NoteBoard {
     }
 
     _build(note) {
+        const isImage = isImageNoteFormat(note.format);
+        const startsInPreview = isImage || note.format === 'html';
         const frame = new St.Widget({
             layout_manager: new Clutter.FixedLayout(),
             reactive: true,
@@ -1121,7 +801,7 @@ export class NoteBoard {
         });
         const card = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
-            style_class: `sticky-note ${PALETTE[note.color]}`,
+            style_class: `sticky-note ${isImage ? 'image-sticker' : PALETTE[note.color]}`,
             x_expand: true,
             y_expand: true,
         });
@@ -1130,9 +810,38 @@ export class NoteBoard {
             style_class: 'sticky-note-grip',
             reactive: true,
             cursor_type: Clutter.CursorType.GRAB,
-            height: 18,
+            height: HEADER_H,
             x_expand: true,
         });
+        // Close button: closing deletes the note. Its side follows the
+        // desktop's window-button layout.
+        let closeButton = null;
+        if ((note.kind ?? 'note') === 'note') {
+            closeButton = new St.Button({
+                style_class: 'sticky-note-close',
+                can_focus: false,
+                reactive: true,
+                accessible_name: t('Delete note'),
+            });
+            closeButton.add_child(new St.Icon({
+                icon_name: 'window-close-symbolic',
+                icon_size: 12,
+                style_class: 'sticky-note-close-icon',
+            }));
+            grip.add_child(closeButton);
+        }
+        // Category pills: one per folder level, e.g. `(pasta) / (subpasta)`.
+        // Root notes and the TODO note have no category pill.
+        let categoryPill = null;
+        let categoryPills = [];
+        if ((note.kind ?? 'note') === 'note' && note.filename.includes('/')) {
+            const built = this._createCategoryPills(note);
+            if (built) {
+                grip.add_child(built.box);
+                categoryPill = built.box;
+                categoryPills = built.pills;
+            }
+        }
         const pill = new St.Widget({
             style_class: 'sticky-note-pill',
             width: 36,
@@ -1152,7 +861,7 @@ export class NoteBoard {
         grip.add_child(expiryBadge);
         const text = new Clutter.Text({
             text: note.text,
-            editable: !note.locked,
+            editable: !note.locked && !isImage,
             selectable: true,
             reactive: true,
             // Return is an activate binding. Leave it off so a newline can be inserted.
@@ -1173,6 +882,7 @@ export class NoteBoard {
             // Fill the page, so a press below the last line still lands on the text.
             y_expand: true,
             y_align: Clutter.ActorAlign.FILL,
+            visible: !startsInPreview,
         });
         // ScrollView.child must implement St.Scrollable. Clutter.Text does not;
         // St.BoxLayout does, and it holds the text.
@@ -1188,8 +898,8 @@ export class NoteBoard {
             reactive: true,
             x_expand: true,
             y_expand: true,
-            y_align: Clutter.ActorAlign.START,
-            visible: false,
+            y_align: isImage ? Clutter.ActorAlign.FILL : Clutter.ActorAlign.START,
+            visible: startsInPreview,
         });
         page.add_child(preview);
         const scroll = new St.ScrollView({
@@ -1202,6 +912,7 @@ export class NoteBoard {
             vscrollbar_policy: St.PolicyType.EXTERNAL,
             x_expand: true,
             y_expand: true,
+            reactive: true,
             child: page,
         });
         const resize = new St.Widget({
@@ -1223,7 +934,9 @@ export class NoteBoard {
 
         const view = {
             note, frame, card, grip, pill, expiryBadge, text, preview, resize, scroll, editClick,
-            previewMode: false,
+            categoryPill, categoryPills, closeButton,
+            previewMode: startsInPreview,
+            previewOnly: isImage,
             editing: false,
             sizeHold: false,
             pendingSize: 0,
@@ -1239,6 +952,10 @@ export class NoteBoard {
             previewCursor: 0,
         };
         editClick.connectObject('recognize', () => {
+            if (view.previewOnly) {
+                this._blur();
+                return;
+            }
             if (view.previewMode) {
                 // Double-click in the preview brings editing back. Locked
                 // notes stay in preview.
@@ -1257,6 +974,7 @@ export class NoteBoard {
             if (!view.note.locked)
                 this._focus(view, true);
         }, this);
+        closeButton?.connectObject('clicked', () => this._delete(view), this);
         scroll.add_action(editClick);
         scroll.connectObject(
             'button-press-event', (_actor, event) => this._onBodyPress(view, event),
@@ -1264,7 +982,7 @@ export class NoteBoard {
         preview.connectObject(
             'captured-event', (_actor, event) => this._onPreviewCapture(view, event),
             this);
-        if (note.kind === 'todo') {
+        if (note.kind === 'todo' || note.format !== 'markdown') {
             view.ribbon = null;
         } else {
             view.ribbon = new NoteRibbon({
@@ -1294,7 +1012,10 @@ export class NoteBoard {
         text.connectObject(
             'captured-event', (_actor, event) => this._onTextCapture(view, event),
             'button-press-event', (_actor, event) => this._onTextPress(view, event),
-            'key-press-event', (_actor, event) => this._onTextKey(view, event),
+            'key-press-event', (_actor, event) => {
+                view._userChoseEditMode = false;
+                return this._onTextKey(view, event);
+            },
             'key-focus-in', () => {
                 view.editing = true;
                 this._focus(view, false);
@@ -1312,205 +1033,11 @@ export class NoteBoard {
         // is activate, and it does not insert a line, so the newline has to
         // be inserted from the controller that sees the key first.
         view.keyControllers = this._watchTextKeys(view, text);
+        // Add clipboard key controller for edit mode (Ctrl+C/V/X/A).
+        this._addClipboardKeyController(view, text);
+        if (view.previewMode)
+            this._refreshPreview(view);
         return view;
-    }
-
-    // Board frame: chrome above, children notes below. Children are real
-    // note frames parented into this frame; boards nest recursively.
-    _buildBoardView(board) {
-        const note = board.note;
-        const zoom = normalizeZoom(note.zoom ?? 100);
-        const frame = new St.Widget({
-            layout_manager: new Clutter.FixedLayout(),
-            reactive: true,
-            x: note.x,
-            y: note.y,
-            width: note.w,
-            height: note.h,
-        });
-        const background = new St.Widget({
-            style_class: `sticky-note sticky-note-board ${PALETTE[note.color]}`,
-            reactive: true,
-            x: 0,
-            y: 0,
-            width: note.w,
-            height: note.h,
-        });
-        // Three layers, painted in add order: background, children host,
-        // chrome (grip + body). Children can never cover the chrome.
-        const host = new St.Widget({
-            layout_manager: new Clutter.FixedLayout(),
-            x: 0,
-            y: 0,
-            width: note.w,
-            height: note.h,
-        });
-        const chrome = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'sticky-note-board-chrome',
-            x: 0,
-            y: 0,
-            width: note.w,
-        });
-        const grip = new St.Widget({
-            layout_manager: new Clutter.FixedLayout(),
-            style_class: 'sticky-note-grip sticky-note-board-header',
-            reactive: true,
-            cursor_type: Clutter.CursorType.GRAB,
-            height: Math.max(16, Math.round(BOARD_HEADER_H * zoom / 100)),
-            x_expand: true,
-        });
-        const toggle = new St.Button({
-            style_class: 'sticky-note-board-toggle',
-            label: note.collapsed ? '▸' : '▾',
-            can_focus: false,
-            x: 4,
-            y: 4,
-            accessible_name: t('Collapse board'),
-        });
-        const title = new St.Label({
-            style_class: 'sticky-note-board-title',
-            style: `font-size: ${zoomFont(zoom)}pt;`,
-            text: note.title,
-            x: 34,
-            y: 6,
-            width: Math.max(48, note.w - 44),
-            reactive: true,
-        });
-        title.clutter_text.line_wrap = false;
-        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        grip.add_child(toggle);
-        grip.add_child(title);
-        chrome.add_child(grip);
-        const body = (note.boardBody ?? '').trim();
-        let bodyScroll = null;
-        let bodyLabel = null;
-        if (body) {
-            bodyLabel = new St.Label({
-                style_class: 'sticky-note-board-body',
-                style: `font-size: ${zoomFont(zoom)}pt;`,
-                x_expand: true,
-            });
-            bodyLabel.clutter_text.set_markup(renderMarkdown(body).markup);
-            bodyLabel.clutter_text.line_wrap = true;
-            bodyLabel.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
-            const page = new St.BoxLayout({
-                orientation: Clutter.Orientation.VERTICAL,
-                x_expand: true,
-                y_expand: true,
-            });
-            page.add_child(bodyLabel);
-            bodyScroll = new St.ScrollView({
-                style_class: 'sticky-note-scroll',
-                overlay_scrollbars: true,
-                enable_touch_scrolling: false,
-                hscrollbar_policy: St.PolicyType.NEVER,
-                vscrollbar_policy: St.PolicyType.EXTERNAL,
-                x_expand: true,
-                height: BOARD_BODY_H,
-                child: page,
-            });
-            chrome.add_child(bodyScroll);
-        }
-        frame.add_child(background);
-        frame.add_child(host);
-        frame.add_child(chrome);
-        const handleSize = Math.max(12, Math.round(HANDLE * zoom / 100));
-        const resize = new St.Widget({
-            style_class: 'sticky-note-resize',
-            reactive: true,
-            cursor_type: Clutter.CursorType.SE_RESIZE,
-            width: handleSize,
-            height: handleSize,
-        });
-        frame.add_child(resize);
-        // Stubs: shared code paths touch text/preview on every view.
-        const text = new Clutter.Text({
-            text: '',
-            editable: false,
-            reactive: false,
-            visible: false,
-        });
-        const preview = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            reactive: false,
-            visible: false,
-        });
-        frame.add_child(text);
-        frame.add_child(preview);
-        const view = {
-            note, frame, card: background, host, chrome, grip, toggle, title, pill: null,
-            bodyScroll, bodyLabel, text, preview, resize,
-            scroll: null, editClick: null, keyControllers: [],
-            ribbon: null,
-            previewMode: false, editing: false, sizeHold: false, pendingSize: 0,
-            anchor: null, rewrite: false, rewriteId: 0, focusId: 0, newlineId: 0,
-            lastEditClick: 0, previewRows: [], renderToken: 0,
-            handleSize, previewCursor: 0,
-        };
-        grip.connectObject(
-            'captured-event', (_actor, event) => this._onHandleEvent(view, 'move', grip, event),
-            'button-press-event', (_actor, event) => {
-                if (event.get_button() === BUTTON_SECONDARY) {
-                    this._openBoardMenu(view);
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
-            },
-            this);
-        toggle.connect('clicked', () => this._toggleBoardCollapsed(view));
-        title.connectObject(
-            'button-press-event', (_actor, event) => {
-                if (event.get_button() === BUTTON_SECONDARY) {
-                    this._openBoardMenu(view);
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
-            },
-            this);
-        resize.connectObject(
-            'captured-event', (_actor, event) => this._onHandleEvent(view, 'resize', resize, event),
-            this);
-        frame.connectObject(
-            'captured-event', (_actor, event) => this._onShortcutCapture(view, event),
-            'button-press-event', (_actor, event) => {
-                if (event.get_button() === BUTTON_SECONDARY) {
-                    this._openBoardMenu(view);
-                    return Clutter.EVENT_STOP;
-                }
-                if (event.get_button() === BUTTON_PRIMARY)
-                    this._focus(view, false);
-                return Clutter.EVENT_PROPAGATE;
-            },
-            this);
-        return view;
-    }
-
-    _refreshBoardBody(board) {
-        const {view, note} = board;
-        const body = (note.boardBody ?? '').trim();
-        if (!view.bodyLabel && body) {
-            // A body appeared after mounting: rebuild the board view.
-            this._unboard(board.key);
-            this._files.queueScan();
-            return;
-        }
-        if (!view.bodyLabel)
-            return;
-        if (view.bodyLabel)
-            view.bodyLabel.clutter_text.set_markup(renderMarkdown(body).markup);
-        if (view.bodyScroll)
-            view.bodyScroll.visible = note.collapsed !== true;
-    }
-
-    _toggleBoardCollapsed(view) {
-        if (view.note.kind !== 'board')
-            return;
-        view.note.collapsed = !view.note.collapsed;
-        this._paint(view);
-        this._layoutBoard(view);
-        this._applyVisibility();
-        this._scheduleSave();
     }
 
     _watchTextKeys(view, text) {
@@ -1528,64 +1055,352 @@ export class NoteBoard {
         return watched;
     }
 
-    _layout(view) {
-        const {note, frame, card, text, resize} = view;
-        if (note.kind === 'board') {
-            this._layoutBoard(view);
+    _copyTextSelection(view) {
+        const selection = view.text.get_selection();
+        if (!selection)
+            return false;
+        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, selection);
+        return true;
+    }
+
+    _cutTextSelection(view) {
+        if (view.note.locked || !this._copyTextSelection(view))
+            return false;
+        view.text.delete_selection();
+        return true;
+    }
+
+    _pasteTextClipboard(view) {
+        if (view.note.locked)
             return;
+        St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (_clipboard, value) => {
+            if (!value || view.note.locked || view.previewMode ||
+                this._views.get(view.note.id) !== view)
+                return;
+            this._focus(view, true);
+            view.text.delete_selection();
+            const at = this._clampIndex(view, view.text.cursor_position);
+            view.text.insert_text(value, at);
+        });
+    }
+
+    _selectAllText(view) {
+        view.text.set_selection(0, -1);
+    }
+
+    // Clutter.Text has no copy/paste helpers. Handle the common editing
+    // shortcuts explicitly with St.Clipboard while the text owns key focus.
+    // On GNOME Shell 51, Clutter.KeyController::key-press has no signal args.
+    // Read keyval/keycode via get_key() and modifier state via get_state().
+    _addClipboardKeyController(view, text) {
+        const controller = new Clutter.KeyController();
+        controller.connectObject('key-press', () => {
+            const [, keyval] = controller.get_key();
+            const [, pressed] = controller.get_state();
+            const control = (pressed & Clutter.ModifierType.CONTROL_MASK) !== 0;
+            const shift = (pressed & Clutter.ModifierType.SHIFT_MASK) !== 0;
+            if (!view.editing || global.stage.get_key_focus() !== text)
+                return Clutter.EVENT_PROPAGATE;
+            const lower = keyval >= 0x41 && keyval <= 0x5a ? keyval + 0x20 : keyval;
+            // Shift+Insert: Paste (no control)
+            if (!control && shift && keyval === Clutter.KEY_Insert) {
+                this._pasteTextClipboard(view);
+                return Clutter.EVENT_STOP;
+            }
+            if (!control)
+                return Clutter.EVENT_PROPAGATE;
+            // Ctrl+Shift+...: let format shortcuts handle these (code, strikethrough, etc.)
+            if (shift)
+                return Clutter.EVENT_PROPAGATE;
+            // Plain Ctrl+C / Ctrl+Insert: Copy
+            if (lower === 0x63 || keyval === Clutter.KEY_Insert) {
+                this._copyTextSelection(view);
+                return Clutter.EVENT_STOP;
+            }
+            // Ctrl+V: Paste
+            if (lower === 0x76) {
+                this._pasteTextClipboard(view);
+                return Clutter.EVENT_STOP;
+            }
+            // Ctrl+X: Cut
+            if (lower === 0x78) {
+                this._cutTextSelection(view);
+                return Clutter.EVENT_STOP;
+            }
+            // Ctrl+A: Select all
+            if (lower === 0x61) {
+                this._selectAllText(view);
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }, this);
+        text.add_action(controller);
+        view.keyControllers.push(controller);
+    }
+
+    // Build the horizontal row of category pills for a note's folder levels.
+    // Returns null for root notes (no folder part) or hidden (dotted) paths.
+    _createCategoryPills(note) {
+        const parts = categoryPartsFromRelpath(note.filename);
+        if (!parts.length)
+            return null;
+        const box = new St.BoxLayout({
+            style_class: 'sticky-note-category-pills',
+            reactive: false,
+            x_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const pills = [];
+        parts.forEach((part, index) => {
+            if (index > 0) {
+                const sep = new St.Label({
+                    text: '/',
+                    style_class: 'sticky-note-category-separator',
+                    reactive: false,
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                box.add_child(sep);
+            }
+            const pill = new St.Label({
+                style_class: 'sticky-note-category-pill',
+                text: `(${part})`,
+                reactive: false,
+                x_align: Clutter.ActorAlign.START,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            pill.clutter_text.line_wrap = false;
+            pill.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+            box.add_child(pill);
+            pills.push(pill);
+        });
+        box.accessible_name = parts.map(part => `(${part})`).join(' / ');
+        return {box, pills};
+    }
+
+    // Rebuild the category pill row after a note's folder changes.
+    _updateCategoryPill(view) {
+        if (view.categoryPill) {
+            view.grip.remove_child(view.categoryPill);
+            view.categoryPill.destroy();
+            view.categoryPill = null;
+            view.categoryPills = [];
         }
+        if ((view.note.kind ?? 'note') === 'note' && view.note.filename.includes('/')) {
+            const built = this._createCategoryPills(view.note);
+            if (built) {
+                view.grip.add_child(built.box);
+                view.categoryPill = built.box;
+                view.categoryPills = built.pills;
+            }
+        }
+        this._layoutHeader(view);
+    }
+
+    // Move the note file to a new relpath, keeping the same view mounted.
+    _moveNote(view, newFilename) {
+        const oldName = view.note.filename;
+        if (oldName === newFilename)
+            return true;
+        if (!this._files.move(oldName, newFilename))
+            return false;
+        this._byFilename.delete(oldName);
+        view.note.filename = newFilename;
+        if (isImageNoteFormat(view.note.format)) {
+            view.note.sourcePath = this._files.file(newFilename).get_path();
+            this._refreshPreview(view);
+        }
+        this._byFilename.set(newFilename, view);
+        this._updateCategoryPill(view);
+        this._scheduleSave();
+        return true;
+    }
+
+    // Extract the first H1 heading from markdown text.
+    _extractFirstH1(text) {
+        const lines = text.split(/\r?\n/);
+        for (const line of lines) {
+            const match = line.match(/^\s*#\s+(.+)$/);
+            if (match)
+                return match[1].trim();
+        }
+        return null;
+    }
+
+    // Convert H1 text to a valid filename base (without extension).
+    _h1ToFilename(h1) {
+        // Remove characters invalid in filenames, collapse whitespace, limit length
+        let base = h1
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // remove diacritics/accents
+            .replace(/[<>:"\/\\|?*\x00-\x1f]/g, '')            // forbidden chars
+            .replace(/[\s]+/g, '-')                             // spaces -> hyphens
+            .replace(/^-+|-+$/g, '')                            // trim hyphens
+            .substring(0, 80);                                  // reasonable limit
+        return base || 'note';
+    }
+
+    // Try to rename the note file based on its first H1 heading.
+    // If the target name conflicts, append a timestamp.
+    _maybeRenameFromH1(view, previousText) {
+        const prevH1 = this._extractFirstH1(previousText);
+        const newH1 = this._extractFirstH1(view.note.text);
+        if (!newH1 || newH1 === prevH1)
+            return;
+        const currentBase = view.note.filename.split('/').pop().replace(/\.md$/, '');
+        const newH1Slug = this._h1ToFilename(newH1);
+        // Already matches (exact or with timestamp suffix)
+        if (currentBase === newH1Slug || currentBase.startsWith(newH1Slug + '-'))
+            return;
+        const dir = view.note.filename.includes('/')
+            ? view.note.filename.slice(0, view.note.filename.lastIndexOf('/') + 1)
+            : '';
+        let newFilename = `${dir}${newH1Slug}.md`;
+        // Conflict resolution: if file exists, append timestamp
+        if (this._files.file(newFilename).query_exists(null)) {
+            const stamp = GLib.get_real_time();
+            newFilename = `${dir}${newH1Slug}-${stamp}.md`;
+        }
+        this._moveNote(view, newFilename);
+    }
+
+    // Apply a category change. When the note shares its old category with
+    // siblings, they all move together: editing a category relocates it.
+    // Empty categoryText means "no category" (move to root).
+    _applyCategory(view, categoryText) {
+        const newCategory = categoryText ? normalizeRelpath(categoryText) : '';
+        if (newCategory === null)
+            return false;
+        const oldName = view.note.filename;
+        const oldCategory = categoryFromRelpath(oldName);
+        const base = oldName.split('/').pop();
+        const newName = newCategory ? `${newCategory}/${base}` : base;
+        if (!this._moveNote(view, newName))
+            return false;
+        if (oldCategory) {
+            const siblings = this._store.notes.filter(note =>
+                note !== view.note && categoryFromRelpath(note.filename) === oldCategory);
+            for (const sibling of siblings) {
+                const siblingView = this._byFilename.get(sibling.filename);
+                if (!siblingView)
+                    continue; // Skip zombie notes without views
+                console.log(`Sticky Notes: _applyCategory moving sibling ${sibling.filename} (id=${sibling.id}) to ${newCategory || 'root'}`);
+                const siblingBase = sibling.filename.split('/').pop();
+                const siblingNewName = newCategory ? `${newCategory}/${siblingBase}` : siblingBase;
+                this._moveNote(siblingView, siblingNewName);
+            }
+        }
+        return true;
+    }
+
+    _layout(view) {
+        const {note, frame, card, text, resize, pill, expiryBadge, categoryPill} = view;
         frame.set_position(note.x, note.y);
         frame.set_size(note.w, note.h);
         card.set_position(0, 0);
         card.set_size(note.w, note.h);
-        view.pill.set_position(
-            Math.max(0, Math.round((note.w - view.pill.width) / 2)), 7);
-        if (view.expiryBadge)
-            view.expiryBadge.set_position(Math.max(0, note.w - 112), 2);
+
+        this._layoutHeader(view);
+
         text.width = Math.max(48, note.w - 26);
-        view.preview.width = Math.max(48, note.w - 26);
+        view.preview.width = isImageNoteFormat(note.format)
+            ? Math.max(48, note.w)
+            : Math.max(48, note.w - 26);
         text.min_height = 0;
         resize.set_position(
             Math.max(0, note.w - view.handleSize), Math.max(0, note.h - view.handleSize));
         resize.set_size(view.handleSize, view.handleSize);
     }
 
-    _layoutBoard(view) {
-        const {note, frame, card, resize} = view;
-        const zoom = normalizeZoom(note.zoom ?? 100);
-        const collapsed = note.collapsed === true;
-        const header = Math.max(16, Math.round(BOARD_HEADER_H * zoom / 100));
-        const body = (!collapsed && view.bodyScroll) ? BOARD_BODY_H : 0;
-        const height = collapsed ? header : note.h;
-        frame.set_position(note.x, note.y);
-        frame.set_size(note.w, height);
-        card.set_position(0, 0);
-        card.set_size(note.w, height);
-        view.host.set_size(note.w, note.h);
-        view.host.visible = !collapsed;
-        view.chrome.set_size(note.w, header + body);
-        view.grip.set_height(header);
-        if (view.bodyScroll)
-            view.bodyScroll.visible = !collapsed;
-        const handle = Math.max(12, Math.round(HANDLE * zoom / 100));
-        view.handleSize = handle;
-        resize.visible = !collapsed;
-        resize.set_position(Math.max(0, note.w - handle), Math.max(0, height - handle));
-        resize.set_size(handle, handle);
-        if (view.toggle)
-            view.toggle.label = collapsed ? '▸' : '▾';
+    // Layout the header grip: close button (per GNOME layout), category pills
+    // (left), expiry badge (right), decorative pill (center). None may overlap.
+    _layoutHeader(view) {
+        const {note, pill, expiryBadge, categoryPill, closeButton} = view;
+        const w = note.w;
+        const closeW = closeButton ? CLOSE_SIZE : 0;
+        // Side insets reserve room for the close button on its configured side.
+        const leftInset = closeButton && this._closeOnLeft ? 4 + closeW + 4 : 6;
+        const rightInset = closeButton && !this._closeOnLeft ? 4 + closeW + 4 : 6;
+        const midY = Math.max(0, Math.round((HEADER_H - 14) / 2));
+        const pillY = Math.max(0, Math.round((HEADER_H - 4) / 2));
+
+        // Close button
+        if (closeButton) {
+            closeButton.set_size(closeW, closeW);
+            const x = this._closeOnLeft ? 4 : Math.max(4, w - closeW - 4);
+            closeButton.set_position(x, Math.max(0, Math.round((HEADER_H - closeW) / 2)));
+        }
+
+        // Measure expiry badge natural width when visible (or 0 when hidden)
+        let expiryW = 0;
+        if (expiryBadge && expiryBadge.visible) {
+            expiryBadge.set_width(-1);
+            const [, natW] = expiryBadge.get_preferred_width(-1);
+            expiryW = natW;
+        }
+
+        // Category pills on the left (after the close button when it is there)
+        if (categoryPill) {
+            const maxPillW = Math.max(0, w - leftInset - 8 - expiryW - rightInset);
+            if (maxPillW <= 0) {
+                categoryPill.hide();
+            } else {
+                categoryPill.show();
+                categoryPill.set_width(-1);
+                const [, natW] = categoryPill.get_preferred_width(-1);
+                const pillW = Math.min(natW, maxPillW);
+                categoryPill.set_width(pillW);
+                categoryPill.set_position(leftInset, midY);
+            }
+        }
+
+        // Expiry badge on the right (bounded by the note edge / close button)
+        if (expiryBadge) {
+            if (expiryBadge.visible) {
+                const [, natW] = expiryBadge.get_preferred_width(-1);
+                const clampedW = Math.min(natW, Math.max(0, w - leftInset - 8 - rightInset));
+                expiryBadge.set_width(clampedW);
+                expiryBadge.set_position(Math.max(leftInset, w - clampedW - rightInset), midY);
+            } else {
+                expiryBadge.set_position(Math.max(0, w - 112), midY);
+            }
+        }
+
+        // Decorative drag pill (centered). Hide when the category pills, the
+        // expiry badge or the close button would overlap it.
+        const hasCategory = categoryPill?.visible ?? false;
+        if (hasCategory) {
+            pill.hide();
+        } else {
+            const pillCenter = Math.round(w / 2);
+            const pillLeft = pillCenter - 18;
+            const pillRight = pillCenter + 18;
+            const expiryLeft = expiryBadge?.visible ? expiryBadge.x : (w - 112);
+            const closeLeft = closeButton && !this._closeOnLeft ? closeButton.x : w;
+            const closeRight = closeButton && this._closeOnLeft ? closeButton.x + closeW : 0;
+            const overlapsExpiry = pillRight > expiryLeft;
+            const overlapsClose = pillLeft < closeRight || pillRight > closeLeft;
+            if (overlapsExpiry || overlapsClose) {
+                pill.hide();
+            } else {
+                pill.show();
+                pill.set_position(Math.max(0, pillLeft), pillY);
+            }
+        }
     }
 
     _paint(view) {
         const note = view.note;
-        const custom = note.custom_color ? normalizeHexColor(note.custom_color) : null;
-        const dark = custom ? hexIsDark(custom) : false;
+        const isImage = isImageNoteFormat(note.format);
+        const custom = note.custom_color ? resolveNameToColor(note.custom_color) : null;
+        const dark = !isImage && custom ? hexIsDark(custom) : false;
         view.customDark = dark;
         const name = PALETTE[note.color] ?? PALETTE[0];
         for (const color of PALETTE)
             view.card.remove_style_class_name(color);
         view.card.remove_style_class_name('custom-color');
-        if (custom) {
+        if (isImage) {
+            view.card.add_style_class_name('image-sticker');
+            view.card.style = 'background-color: transparent;';
+        } else if (custom) {
             view.card.add_style_class_name('custom-color');
             view.card.style = `background-color: ${custom};`;
         } else {
@@ -1597,41 +1412,39 @@ export class NoteBoard {
         else
             view.card.remove_style_class_name('pinned');
         const ink = dark ? this._inkLight : this._ink;
+
+        // Category pill text color adapts to theme
+        if (view.categoryPill) {
+            view.categoryPill.style = dark
+                ? 'color: rgba(255,255,255,0.85);'
+                : 'color: #322f38;';
+        }
+
         if (view.pill)
             view.pill.style = dark ? 'background-color: rgba(246,245,244,0.4);' : '';
-        if (note.kind === 'board') {
-            const zoom = normalizeZoom(note.zoom ?? 100);
-            note.zoom = zoom;
-            view.handleSize = Math.max(12, Math.round(HANDLE * zoom / 100));
-            const bodyStyle = `font-size: ${zoomFont(zoom)}pt${dark ? '; color: #f6f5f4' : ''};`;
-            if (view.title)
-                view.title.style = bodyStyle;
-            if (view.bodyLabel)
-                view.bodyLabel.style = bodyStyle;
-            this._layoutBoard(view);
-            return;
-        }
-        view.text.editable = !note.locked;
-        const cursor = note.locked
+        view.text.editable = !note.locked && !isImage;
+        const cursor = note.locked || isImage
             ? Clutter.CursorType.DEFAULT
             : Clutter.CursorType.TEXT;
         view.text.cursor_type = cursor;
         view.frame.cursor_type = cursor;
         const zoom = normalizeZoom(note.zoom ?? 100);
         note.zoom = zoom;
-        view.handleSize = Math.max(12, Math.round(HANDLE * zoom / 100));
+        view.handleSize = HANDLE;
+        // Zoom affects only the text font size. Header (grip/pill) and chrome stay fixed.
         view.text.font_name = `Sans ${zoomFont(zoom)}`;
         view.text.color = ink;
         view.text.cursor_color = ink;
-        view.resize.style = dark ? 'background-color: rgba(246,245,244,0.25);' : '';
-        view.grip.set_height(Math.max(10, Math.round(18 * zoom / 100)));
-        view.pill.set_width(Math.max(16, Math.round(36 * zoom / 100)));
+        view.resize.style = isImage
+            ? ''
+            : (dark ? 'background-color: rgba(246,245,244,0.25);' : '');
+        view.grip.set_height(HEADER_H);
+        view.pill.set_width(36);
         this._updateExpiryBadge(view);
         this._showAttrs(view);
         this._syncRibbon(view);
     }
 
-    // Grip badge: short expiration label, hidden when unset.
     _updateExpiryBadge(view) {
         const badge = view.expiryBadge;
         if (!badge)
@@ -1639,6 +1452,7 @@ export class NoteBoard {
         const expires = parseExpires(view.note.expires);
         if (!expires) {
             badge.visible = false;
+            this._layoutHeader(view);
             return;
         }
         const pad = value => String(value).padStart(2, '0');
@@ -1646,6 +1460,7 @@ export class NoteBoard {
             + `${pad(expires.getHours())}:${pad(expires.getMinutes())}`;
         badge.style = view.customDark ? 'color: rgba(246,245,244,0.85);' : '';
         badge.visible = true;
+        this._layoutHeader(view);
     }
 
     _drop(view) {
@@ -1682,8 +1497,6 @@ export class NoteBoard {
         view.ribbon?.destroy();
         this._views.delete(view.note.id);
         this._byFilename.delete(view.note.filename);
-        if (view.note.kind === 'board')
-            this._boards.delete(view.note.boardKey);
         view.frame.destroy();
     }
 
@@ -1799,7 +1612,11 @@ export class NoteBoard {
 
     _onTextPress(view, event) {
         if (event.get_button() === BUTTON_SECONDARY) {
-            this._openMenu(view);
+            // In edit mode, show text editing context menu; otherwise show note menu.
+            if (view.editing && global.stage.get_key_focus() === view.text)
+                this._openTextEditMenu(view, event);
+            else
+                this._openMenu(view);
             return Clutter.EVENT_STOP;
         }
         if (event.get_button() === BUTTON_PRIMARY)
@@ -1821,15 +1638,29 @@ export class NoteBoard {
             // so no focus requirement; works in any editing state.
             if (kind !== 'note')
                 return Clutter.EVENT_PROPAGATE;
-            if (control)
+            if (isImageNoteFormat(view.note.format))
+                return Clutter.EVENT_PROPAGATE;
+            if (control && view.note.format === 'markdown')
                 this._duplicate(view);
-            else
+            else if (!control)
                 this._copyNote(view);
+            else
+                return Clutter.EVENT_PROPAGATE;
             return Clutter.EVENT_STOP;
         }
-        if (type === Clutter.EventType.SCROLL && control && !editing) {
+        if (type === Clutter.EventType.SCROLL && control) {
+            if (isImageNoteFormat(view.note.format))
+                return Clutter.EVENT_PROPAGATE;
             const direction = event.get_scroll_direction();
-            const step = direction === Clutter.ScrollDirection.UP ? 10 : -10;
+            let step;
+            if (direction === Clutter.ScrollDirection.SMOOTH) {
+                // Touchpads emit SMOOTH; wheel events may still report UP/DOWN.
+                const [, delta] = event.get_scroll_delta();
+                // Scroll up produces a negative delta = zoom in.
+                step = Math.abs(delta) < 0.01 ? -10 : (delta < 0 ? 10 : -10);
+            } else {
+                step = direction === Clutter.ScrollDirection.UP ? 10 : -10;
+            }
             this._stepZoom(view, step);
             return Clutter.EVENT_STOP;
         }
@@ -1840,6 +1671,8 @@ export class NoteBoard {
         const key = event.get_key_symbol();
         const lower = key >= 0x41 && key <= 0x5a ? key + 0x20 : key;
         if (control && lower === 0x63) {
+            if (isImageNoteFormat(view.note.format))
+                return Clutter.EVENT_PROPAGATE;
             this._copyNote(view);
             return Clutter.EVENT_STOP;
         }
@@ -1923,6 +1756,8 @@ export class NoteBoard {
     _onTextCapture(view, event) {
         if (view.note.locked)
             return Clutter.EVENT_PROPAGATE;
+        if (view.note.kind !== 'todo' && view.note.format !== 'markdown')
+            return Clutter.EVENT_PROPAGATE;
         const type = event.type();
         if (type === Clutter.EventType.MOTION) {
             const cursor = this._boxAt(view, event) < 0
@@ -1938,6 +1773,8 @@ export class NoteBoard {
     }
 
     _pressBox(view, event) {
+        if (view.note.kind !== 'todo' && view.note.format !== 'markdown')
+            return false;
         const start = this._boxAt(view, event);
         if (start < 0)
             return false;
@@ -2101,16 +1938,23 @@ export class NoteBoard {
         const found = this._previewRowFor(view, event.get_source());
         if (!found)
             return Clutter.EVENT_PROPAGATE;
+        return this._onPreviewRowPress(view, found.row, found.actor, event);
+    }
+
+    _onPreviewRowPress(view, row, actor, event) {
+        if (event.get_button() !== BUTTON_PRIMARY || !view.previewMode)
+            return Clutter.EVENT_PROPAGATE;
+        const found = {row, actor};
         const link = this._linkAt(view, found, event);
         if (link) {
             this._openLink(view, link.url);
             return Clutter.EVENT_STOP;
         }
-        if (found.row.todo)
-            return this._toggleTodoAt(view, found.row.source)
+        if (row.todo)
+            return this._toggleTodoAt(view, row.source)
                 ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
-        if (found.row.box)
-            return this._toggleBoxLineAt(view, found.row.source)
+        if (row.box)
+            return this._toggleBoxLineAt(view, row.source)
                 ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
         // Not interactive: let the scroll gesture handle blur/double-click.
         return Clutter.EVENT_PROPAGATE;
@@ -2118,6 +1962,8 @@ export class NoteBoard {
     // Character offset of the line whose checkbox glyph is under the pointer,
     // or -1. Pango indexes bytes, the note text counts characters.
     _boxAt(view, event) {
+        if (view.note.kind !== 'todo' && view.note.format !== 'markdown')
+            return -1;
         const [sx, sy] = event.get_coords();
         const [ok, x, y] = view.text.transform_stage_point(sx, sy);
         if (!ok)
@@ -2162,7 +2008,8 @@ export class NoteBoard {
             return GLib.SOURCE_REMOVE;
         });
         const text = view.text;
-        if (text.cursor_position === text.selection_bound) {
+        const structured = view.note.kind === 'todo' || view.note.format === 'markdown';
+        if (structured && text.cursor_position === text.selection_bound) {
             const cursor = this._clampIndex(view, text.cursor_position);
             const ended = view.note.kind === 'todo'
                 ? todoEndOfLine(view.note.text, cursor)
@@ -2191,7 +2038,7 @@ export class NoteBoard {
             this._dropHold(view);
             return Clutter.EVENT_PROPAGATE;
         }
-        if (control && !view.note.locked) {
+        if (control && !view.note.locked && view.note.format === 'markdown') {
             const action = this._formatShortcut(key, (event.get_state() & Clutter.ModifierType.SHIFT_MASK) !== 0);
             if (action) {
                 this._runFormatShortcut(view, action);
@@ -2201,7 +2048,8 @@ export class NoteBoard {
         if (!control && ENTER_KEYS.has(key))
             return this._insertNewline(view) ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
         if (key === Clutter.KEY_BackSpace && !control && !view.note.locked &&
-            view.text.cursor_position === view.text.selection_bound) {
+            view.text.cursor_position === view.text.selection_bound &&
+            (view.note.kind === 'todo' || view.note.format === 'markdown')) {
             const cursor = view.text.cursor_position < 0
                 ? Array.from(view.note.text).length
                 : view.text.cursor_position;
@@ -2224,6 +2072,14 @@ export class NoteBoard {
         const prev = view.note.text;
         if (next === prev)
             return;
+        if (view.note.kind !== 'todo' && view.note.format !== 'markdown') {
+            view.note.text = next;
+            view.note.spans = [];
+            view.note.sizes = [];
+            view.text.set_attributes(null);
+            this._scheduleSave();
+            return;
+        }
         const edit = editRange(prev, next);
         if (edit.removed === 1 && edit.inserted === 0) {
             const marker = backspaceMarker(prev, edit.start + 1);
@@ -2261,6 +2117,9 @@ export class NoteBoard {
         this._showAttrs(view);
         this._syncRibbon(view);
         this._scheduleSave();
+        // Auto-rename markdown notes based on first H1
+        if (view.note.format === 'markdown')
+            this._maybeRenameFromH1(view, prev);
     }
 
     // Without spans or sizes, both follow the edit from the current note text.
@@ -2322,7 +2181,7 @@ export class NoteBoard {
     // selection, or inserts an empty pair with the caret inside. Legacy
     // spans of existing notes stay untouched and keep rendering.
     _toggleStyle(view, bit) {
-        if (view.note.locked)
+        if (view.note.locked || view.note.format !== 'markdown')
             return;
         const marker = MARKERS[bit];
         if (!marker)
@@ -2335,7 +2194,7 @@ export class NoteBoard {
     }
 
     _insertTable(view) {
-        if (view.note.locked)
+        if (view.note.locked || view.note.format !== 'markdown')
             return;
         const [, end] = view.anchor ?? this._range(view);
         // Insert at the caret end and keep whatever was selected.
@@ -2346,7 +2205,7 @@ export class NoteBoard {
     }
 
     _applyMarker(view, kind) {
-        if (view.note.locked)
+        if (view.note.locked || view.note.format !== 'markdown')
             return;
         const cursor = view.anchor ? view.anchor[1] : this._range(view)[1];
         const next = ensureMarker(view.note.text, cursor, kind);
@@ -2445,6 +2304,10 @@ export class NoteBoard {
     }
 
     _showAttrs(view) {
+        if (view.note.kind !== 'todo' && view.note.format !== 'markdown') {
+            view.text.set_attributes(null);
+            return;
+        }
         const runs = attributeRuns(view.note.text, view.note.spans, view.note.sizes);
         if (!runs.length) {
             view.text.set_attributes(null);
@@ -2570,6 +2433,8 @@ export class NoteBoard {
         view.grip.cursor_type = Clutter.CursorType.GRAB;
         view.note.expanded_h = view.note.h;
         view.note.workspace = this._workspace();
+        if (isImageNoteFormat(view.note.format))
+            this._refreshPreview(view);
         this._scheduleSave();
     }
 
@@ -2587,14 +2452,9 @@ export class NoteBoard {
         const next = Math.min(200, Math.max(5, current + delta));
         if (next === current)
             return;
-        const factor = next / current;
+        // Zoom scales only the written content. Header (grip/pill) and chrome stay fixed.
         view.note.zoom = next;
-        view.note.w = Math.min(3000, Math.max(MIN_W, Math.round(view.note.w * factor)));
-        view.note.h = Math.min(3000, Math.max(MIN_H, Math.round(view.note.h * factor)));
-        view.note.expanded_h = Math.min(3000,
-            Math.max(MIN_H, Math.round((view.note.expanded_h ?? view.note.h) * factor)));
         this._paint(view);
-        this._layout(view);
         if (view.previewMode)
             this._refreshPreview(view);
         this._scheduleSave();
@@ -2607,33 +2467,50 @@ export class NoteBoard {
         St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
     }
 
+    _externalAppsForView(view) {
+        const groups = [];
+        for (const contentType of contentTypesForFilename(view.note.filename)) {
+            try {
+                groups.push(Gio.AppInfo.get_all_for_type(contentType) ?? []);
+            } catch (error) {
+                console.warn(`Sticky Notes: cannot list applications for ${contentType}: ${error}`);
+            }
+        }
+        return compatibleApps(groups);
+    }
+
+    _launchExternalEditor(view, app) {
+        try {
+            // Flush the latest edit before another process reads the file.
+            this._write();
+            const files = view.note.kind === 'todo' ? this._todoFiles : this._files;
+            const file = files?.file(view.note.filename);
+            if (!file?.query_exists(null))
+                throw new Error('Note file does not exist');
+            launchExternalApp(app, file);
+        } catch (error) {
+            const name = app?.get_display_name?.() ?? app?.get_name?.() ?? 'application';
+            console.warn(`Sticky Notes: could not open ${view.note.filename} in ${name}: ${error}`);
+        }
+    }
+
     _duplicate(view) {
-        if (view.note.kind !== 'note')
+        if (view.note.kind !== 'note' || view.note.format !== 'markdown')
             return;
         const source = view.note;
-        const board = typeof source.board === 'string' && source.board
-            ? this._boards.get(source.board)
-            : null;
         const areas = this._workAreas();
-        const obstacles = this._store.notes
-            .filter(note => (note.board ?? null) === (board?.key ?? null))
-            .map(note => [note.x, note.y, note.w, note.h]);
-        let x;
-        let y;
-        if (board?.view)
-            [x, y] = this._childOrigin(board, source.w, source.h);
-        else
-            [x, y] = freshOrigin(obstacles, areas, source.w, source.h, null, [source.x, source.y]);
+        const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
+        const [x, y] = freshOrigin(obstacles, areas, source.w, source.h, null, [source.x, source.y]);
         const id = this._store.next_id;
         this._store.next_id += 1;
-        const prefix = typeof source.board === 'string' && source.board
-            ? `${source.board}/`
-            : (source.filename.includes('/')
-                ? source.filename.slice(0, source.filename.lastIndexOf('/') + 1)
-                : '');
+        // Duplicate in the same folder as the original note
+        const prefix = source.filename.includes('/')
+            ? source.filename.slice(0, source.filename.lastIndexOf('/') + 1)
+            : '';
         const note = {
             id,
             kind: 'note',
+            format: 'markdown',
             filename: this._files.newFilename(prefix),
             pinned: source.pinned === true,
             x,
@@ -2643,7 +2520,6 @@ export class NoteBoard {
             expanded_h: source.h,
             color: source.color,
             size: source.size,
-            collapsed: false,
             locked: false,
             text: source.text,
             spans: source.spans.map(span => ({...span})),
@@ -2651,7 +2527,6 @@ export class NoteBoard {
             zoom: normalizeZoom(source.zoom ?? 100),
             custom_color: typeof source.custom_color === 'string' ? source.custom_color : null,
             expires: typeof source.expires === 'string' ? source.expires : null,
-            board: source.board ?? null,
             workspace: this._workspace(),
         };
         this._clampNote(note);
@@ -2676,6 +2551,7 @@ export class NoteBoard {
         this._commitText(view, withTodoGlyphs(sorted), 0);
     }
     _refreshPreview(view) {
+        console.log(`Sticky Notes: _refreshPreview for ${view.note.filename}, previewMode=${view.previewMode}, token will be ${view.renderToken + 1}`);
         if (!view.previewMode)
             return;
         for (const child of view.preview.get_children()) {
@@ -2686,9 +2562,19 @@ export class NoteBoard {
         const token = view.renderToken;
         view.previewRows = [];
         try {
-            const render = view.note.kind === 'todo'
-                ? renderTodo(view.note.text, toDateString(new Date()))
-                : renderMarkdown(view.note.text);
+            if (isImageNoteFormat(view.note.format)) {
+                this._addStickerPreview(view, token);
+                return;
+            }
+            let render;
+            if (view.note.kind === 'todo')
+                render = renderTodo(view.note.text, toDateString(new Date()));
+            else if (view.note.format === 'text')
+                render = renderPlainText(view.note.text);
+            else if (view.note.format === 'html')
+                render = renderSafeHtml(view.note.text);
+            else
+                render = renderMarkdown(view.note.text);
             for (const row of render.rows)
                 this._addPreviewRow(view, row, token);
         } catch (error) {
@@ -2727,6 +2613,14 @@ export class NoteBoard {
         }
         if (!actor)
             return;
+        // The preview-level capture handler is the fast path. A direct row
+        // handler is a fallback for Shell/Clutter versions where a gesture on
+        // the surrounding scroll view prevents that capture path from seeing
+        // the final button event.
+        if (row.todo || row.box || row.links?.length > 0) {
+            actor.connectObject('button-press-event', (_actor, event) =>
+                this._onPreviewRowPress(view, row, actor, event), this);
+        }
         view.previewRows.push(row);
         view.preview.add_child(actor);
     }
@@ -2770,34 +2664,74 @@ export class NoteBoard {
     }
 
     // Show a local image file in the row, replacing the alt placeholder.
-    _showImageFile(view, box, placeholder, path, maxWidth, token) {
+    _showImageFile(view, box, placeholder, path, maxWidth, token,
+        maxHeight = 1200, quiet = false) {
         if (token !== view.renderToken || !box.get_parent())
             return;
         try {
-            const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, maxWidth, 1200, true);
+            const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                path, Math.max(1, maxWidth), Math.max(1, maxHeight), true);
             const width = pixbuf.get_width();
             const height = pixbuf.get_height();
-            const image = new Clutter.Image();
-            image.set_data(
-                pixbuf.get_pixels(),
-                pixbuf.get_has_alpha() ? Cogl.PixelFormat.RGBA_8888 : Cogl.PixelFormat.RGB_888,
-                width, height, pixbuf.get_rowstride());
-            const texture = Clutter.TextureContent.new_from_texture(image.get_texture(), null);
+            const hasAlpha = pixbuf.get_has_alpha();
             if (placeholder.get_parent() === box)
                 box.remove_child(placeholder);
             placeholder.destroy();
+            // Use Clutter.TextureContent with Gdk.Texture (GDK 4 paintable API)
+            const gdkTexture = Gdk.Texture.new_for_pixbuf(pixbuf);
             const widget = new St.Widget({
                 style_class: 'sticky-note-image-pic',
                 width, height,
                 reactive: true,
                 accessible_name: 'image',
             });
-            widget.set_content(texture);
+            const content = new Clutter.TextureContent();
+            content.texture = gdkTexture;
+            widget.set_content(content);
             box.add_child(widget);
+            box._imageWidget = widget;
+            box._imageHasAlpha = hasAlpha;
+            box._imageWidth = width;
+            box._imageHeight = height;
+            return true;
         } catch (error) {
             // A broken image never breaks the preview; keep the alt text.
-            console.warn(`Sticky Notes: could not load image ${path}: ${error}`);
+            if (!quiet)
+                console.warn(`Sticky Notes: could not load image ${path}: ${error}`);
+            box._imageError = `${error}`;
+            return false;
         }
+    }
+
+    _addStickerPreview(view, token) {
+        const box = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-image-sticker-content',
+            x_expand: true,
+            y_expand: true,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const placeholder = new St.Label({
+            style_class: 'sticky-image-placeholder',
+            text: t('Invalid image'),
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        placeholder.clutter_text.line_wrap = true;
+        box.add_child(placeholder);
+        const path = view.note.sourcePath ?? this._files?.file(view.note.filename)?.get_path();
+        const maxWidth = Math.max(1, view.note.w - 8);
+        const maxHeight = Math.max(1, view.note.h - HEADER_H - 8);
+        view.stickerContent = box;
+        view.preview.add_child(box);
+        if (path)
+            console.log(`Sticky Notes: loading sticker ${path} into ${maxWidth}x${maxHeight}`);
+        const loaded = path
+            ? this._showImageFile(view, box, placeholder, path, maxWidth, token, maxHeight, true)
+            : false;
+        if (!loaded)
+            box.add_style_class_name('invalid');
     }
 
     _buildImageRow(view, row, token, style) {
@@ -3051,7 +2985,13 @@ export class NoteBoard {
     }
 
     _togglePreview(view) {
+        if (view.previewOnly)
+            return;
         view.previewMode = !view.previewMode;
+        // When user explicitly chooses edit mode, suppress auto-preview until
+        // they edit again (key-press clears the flag).
+        if (!view.previewMode)
+            view._userChoseEditMode = true;
         if (view.previewMode) {
             if (global.stage.get_key_focus() === view.text)
                 global.stage.set_key_focus(null);
@@ -3069,6 +3009,15 @@ export class NoteBoard {
     // comes back via the menu (Edit Markdown) or double-clicking the note.
     _autoPreview(view) {
         if (view.previewMode || (view.note.kind ?? 'note') !== 'note')
+            return;
+        // Suppress auto-preview while the text-edit menu is open for this view.
+        // The menu steals key focus from view.text; without this guard,
+        // key-focus-out would hide view.text and switch to preview mode.
+        if (view._inTextEditMenu || view._inNoteMenu)
+            return;
+        // Respect explicit user choice: if they toggled to edit mode, don't
+        // auto-preview until they start editing again.
+        if (view._userChoseEditMode)
             return;
         view.previewMode = true;
         this._refreshPreview(view);
@@ -3105,13 +3054,6 @@ export class NoteBoard {
         this._scheduleSave();
     }
 
-    // Prefix for creating a new note inside the same board as `view`.
-    _boardPrefix(view) {
-        return typeof view.note.board === 'string' && view.note.board
-            ? `${view.note.board}/`
-            : '';
-    }
-
     // Shared color swatch grid for note and board context menus.
     _addColorSwatches(menu, view) {
         const colors = new St.BoxLayout({
@@ -3124,7 +3066,7 @@ export class NoteBoard {
             style_class: 'sticky-note-caption',
             x_align: Clutter.ActorAlign.START,
         }));
-        const custom = view.note.custom_color ? normalizeHexColor(view.note.custom_color) : null;
+        const custom = view.note.custom_color ? resolveNameToColor(view.note.custom_color) : null;
         for (const row of [SWATCH_ORDER.slice(0, 8), SWATCH_ORDER.slice(8)]) {
             const line = new St.BoxLayout({
                 style_class: 'sticky-swatch-row',
@@ -3136,7 +3078,7 @@ export class NoteBoard {
                     style_class: `sticky-swatch ${name}${!custom && index === view.note.color ? ' current' : ''}`,
                     width: 22,
                     height: 22,
-                    can_focus: false,
+                    can_focus: true,
                     accessible_name: t(COLOR_LABELS[name]),
                 });
                 button.connectObject('clicked', () => {
@@ -3156,10 +3098,14 @@ export class NoteBoard {
             style_class: `sticky-swatch sticky-swatch-custom${custom ? ' current' : ''}`,
             width: 22,
             height: 22,
-            can_focus: false,
-            label: '+',
+            can_focus: true,
             accessible_name: t('Custom color'),
         });
+        customButton.add_child(new St.Icon({
+            icon_name: 'color-picker-symbolic',
+            icon_size: 14,
+            style_class: 'sticky-swatch-dropper',
+        }));
         if (custom)
             customButton.style = `background-color: ${custom};`;
         customButton.connectObject('clicked', () => this._toggleColorEditor(menu, view, customButton, colors), this);
@@ -3169,8 +3115,8 @@ export class NoteBoard {
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
     }
 
-    // Inline custom-color editor: an entry with a live preview and an apply
-    // action. Toggles off when the + button is clicked again.
+    // Inline custom-color editor: NameToColor accepts hexadecimal values,
+    // color names, moods and arbitrary deterministic text.
     _toggleColorEditor(menu, view, customButton, colors) {
         const existing = menu.box.get_children().find(child =>
             child.has_style_class_name?.('sticky-swatch-editor'));
@@ -3188,7 +3134,7 @@ export class NoteBoard {
             style_class: 'sticky-swatch-entry',
             x_expand: true,
             can_focus: true,
-            hint_text: '#RRGGBB',
+            hint_text: '#RRGGBB, blue, calma…',
         });
         const preview = new St.Widget({
             style_class: 'sticky-swatch-preview',
@@ -3202,145 +3148,568 @@ export class NoteBoard {
             accessible_name: t('Apply'),
         });
         const applyColor = () => {
-            const normalized = normalizeHexColor(entry.get_text());
-            if (!normalized)
+            const expression = entry.get_text().trim();
+            if (!resolveNameToColor(expression))
                 return; // Invalid input: nothing happens.
-            this._setCustomColor(view, normalized);
+            this._setCustomColor(view, expression);
             this._markCurrent(colors, view);
         };
-        entry.connectObject('changed', () => {
-            const normalized = normalizeHexColor(entry.get_text());
+        const entryText = entry.get_clutter_text();
+        entryText.connectObject('text-changed', () => {
+            const normalized = resolveNameToColor(entry.get_text());
             preview.style = normalized ? `background-color: ${normalized};` : '';
         }, this);
-        entry.connectObject('activate', applyColor, this);
+        entryText.connectObject('activate', applyColor, this);
         apply.connectObject('clicked', applyColor, this);
         editor.add_child(entry);
         editor.add_child(preview);
         editor.add_child(apply);
-        menu.box.add_child(editor);
-        const seeded = view.note.custom_color ? normalizeHexColor(view.note.custom_color) : null;
+        // Insert the editor right after the color swatches so it is visible.
+        const colorsIndex = menu.box.get_children().indexOf(colors);
+        if (colorsIndex >= 0)
+            menu.box.insert_child_at_index(editor, colorsIndex + 1);
+        else
+            menu.box.add_child(editor);
+        const seeded = view.note.custom_color ? resolveNameToColor(view.note.custom_color) : null;
         if (seeded) {
-            entry.text = seeded;
+            entry.text = view.note.custom_color;
             preview.style = `background-color: ${seeded};`;
         }
+        editor._entry = entry;
+        editor._preview = preview;
+        editor._applyButton = apply;
         entry.grab_key_focus();
     }
 
-    _setCustomColor(view, hex) {
-        view.note.custom_color = hex;
+    _setCustomColor(view, expression) {
+        view.note.custom_color = expression;
         this._paint(view);
         if (view.previewMode)
             this._refreshPreview(view);
         this._scheduleSave();
     }
 
-    _openMenu(view) {
-        if (view.note.kind === 'board') {
-            this._openBoardMenu(view);
-            return;
+    // Compact icon button for the 3-row context-menu grid.
+    _mkMenuButton(icon, name, fn, sensitive = true) {
+        const button = new St.Button({
+            style_class: `sticky-menu-btn${sensitive ? '' : ' insensitive'}`,
+            can_focus: true,
+            accessible_name: name,
+            reactive: sensitive,
+        });
+        button.add_child(new St.Icon({
+            icon_name: icon,
+            icon_size: 16,
+            style_class: 'sticky-menu-icon',
+        }));
+        if (sensitive)
+            button.connectObject('clicked', () => fn(), this);
+        return button;
+    }
+
+    // Button that expands a calendar built entirely from Shell actors. GTK
+    // widgets cannot be embedded in the GNOME Shell St/Clutter actor tree.
+    _buildExpiryEditor(view) {
+        const box = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-menu-expiry',
+            x_expand: true,
+        });
+        const expires = parseExpires(view.note.expires);
+        const editorRow = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            style_class: 'expiry-editor',
+            x_expand: true,
+        });
+        const icon = new St.Label({text: '⌛', style_class: 'expiry-icon'});
+        const dateLabel = new St.Label({
+            text: expires ? formatExpires(expires) : t('Set expiry'),
+            x_align: Clutter.ActorAlign.START,
+        });
+        const dateButton = new St.Button({
+            style_class: 'sticky-expiry-button',
+            can_focus: true,
+            x_expand: true,
+            accessible_name: t('Choose expiry date'),
+        });
+        dateButton.add_child(dateLabel);
+        const clearBtn = new St.Button({
+            style_class: `sticky-swatch-apply${expires ? '' : ' insensitive'}`,
+            can_focus: true,
+            reactive: !!expires,
+            label: '✕',
+            accessible_name: t('Clear expiry'),
+        });
+        const setClearEnabled = enabled => {
+            clearBtn.reactive = enabled;
+            if (enabled)
+                clearBtn.remove_style_class_name('insensitive');
+            else
+                clearBtn.add_style_class_name('insensitive');
+        };
+        let calendar = null;
+        const applyDate = date => {
+            this._setExpiry(view, date);
+            dateLabel.text = formatExpires(date);
+            setClearEnabled(true);
+            calendar?.setDate(date);
+        };
+        const initialDate = expires ?? new Date();
+        initialDate.setSeconds(0, 0);
+        calendar = this._buildExpiryCalendar(initialDate, applyDate);
+        calendar.actor.visible = false;
+        dateButton.connectObject('clicked', () => {
+            calendar.actor.visible = !calendar.actor.visible;
+        }, this);
+        clearBtn.connectObject('clicked', () => {
+            this._clearExpiry(view);
+            dateLabel.text = t('Set expiry');
+            setClearEnabled(false);
+        }, this);
+        editorRow.add_child(icon);
+        editorRow.add_child(dateButton);
+        editorRow.add_child(clearBtn);
+        box.add_child(editorRow);
+        box.add_child(calendar.actor);
+        const presetRow = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            style_class: 'sticky-menu-row',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        presetRow.add_child(this._mkMenuButton('alarm-symbolic', t('In 1 hour'),
+            () => applyDate(new Date(Date.now() + 3600e3))));
+        presetRow.add_child(this._mkMenuButton('alarm-symbolic', t('Tomorrow 09:00'), () => {
+            const date = new Date();
+            date.setDate(date.getDate() + 1);
+            date.setHours(9, 0, 0, 0);
+            applyDate(date);
+        }));
+        presetRow.add_child(this._mkMenuButton('alarm-symbolic', t('In 1 week'),
+            () => applyDate(new Date(Date.now() + 7 * 86400e3))));
+        box.add_child(presetRow);
+        box._dateButton = dateButton;
+        box._clearButton = clearBtn;
+        box._calendar = calendar;
+        box._presetRow = presetRow;
+        return box;
+    }
+
+    _buildExpiryCalendar(initialDate, onChange) {
+        let selected = new Date(initialDate);
+        let shown = new Date(selected.getFullYear(), selected.getMonth(), 1);
+        const actor = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-expiry-calendar',
+            x_expand: true,
+        });
+        const header = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            style_class: 'sticky-calendar-header',
+            x_expand: true,
+        });
+        const monthLabel = new St.Label({
+            style_class: 'sticky-calendar-month',
+            x_expand: true,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const previous = this._mkMenuButton(
+            'go-previous-symbolic', t('Previous month'), () => {
+                shown = new Date(shown.getFullYear(), shown.getMonth() - 1, 1);
+                rebuild();
+            });
+        const next = this._mkMenuButton(
+            'go-next-symbolic', t('Next month'), () => {
+                shown = new Date(shown.getFullYear(), shown.getMonth() + 1, 1);
+                rebuild();
+            });
+        header.add_child(previous);
+        header.add_child(monthLabel);
+        header.add_child(next);
+        actor.add_child(header);
+
+        const weekdays = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            style_class: 'sticky-calendar-week',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        const weekStart = Shell.util_get_week_start?.() ?? 0;
+        const weekdayFormat = new Intl.DateTimeFormat(undefined, {weekday: 'narrow'});
+        for (let column = 0; column < 7; column++) {
+            const weekday = (weekStart + column) % 7;
+            const date = new Date(2023, 0, 1 + weekday);
+            weekdays.add_child(new St.Label({
+                text: weekdayFormat.format(date),
+                style_class: 'sticky-calendar-weekday',
+                x_align: Clutter.ActorAlign.CENTER,
+            }));
         }
+        actor.add_child(weekdays);
+
+        const days = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-calendar-days',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        actor.add_child(days);
+        const timeLabel = new St.Label({
+            style_class: 'sticky-calendar-time',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const sameDay = (left, right) => left.getFullYear() === right.getFullYear() &&
+            left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
+        const commit = date => {
+            selected = new Date(date);
+            selected.setSeconds(0, 0);
+            shown = new Date(selected.getFullYear(), selected.getMonth(), 1);
+            onChange(new Date(selected));
+            rebuild();
+        };
+        const adjustMinutes = amount => {
+            const date = new Date(selected);
+            date.setMinutes(date.getMinutes() + amount);
+            commit(date);
+        };
+        const timeButton = (label, name, amount) => {
+            const button = new St.Button({
+                style_class: 'sticky-calendar-time-button',
+                can_focus: true,
+                label,
+                accessible_name: name,
+            });
+            button.connectObject('clicked', () => adjustMinutes(amount), this);
+            return button;
+        };
+        const timeRow = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            style_class: 'sticky-calendar-time-row',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        timeRow.add_child(timeButton('−1h', t('One hour earlier'), -60));
+        timeRow.add_child(timeButton('−15', t('Fifteen minutes earlier'), -15));
+        timeRow.add_child(timeLabel);
+        timeRow.add_child(timeButton('+15', t('Fifteen minutes later'), 15));
+        timeRow.add_child(timeButton('+1h', t('One hour later'), 60));
+        actor.add_child(timeRow);
+
+        const monthFormat = new Intl.DateTimeFormat(undefined, {month: 'long', year: 'numeric'});
+        const fullDateFormat = new Intl.DateTimeFormat(undefined, {dateStyle: 'full'});
+        const today = new Date();
+        const rebuild = () => {
+            monthLabel.text = monthFormat.format(shown);
+            timeLabel.text = formatExpires(selected).slice(-5);
+            for (const child of days.get_children())
+                child.destroy();
+            const offset = (new Date(shown.getFullYear(), shown.getMonth(), 1).getDay() -
+                weekStart + 7) % 7;
+            const first = new Date(shown.getFullYear(), shown.getMonth(), 1 - offset);
+            for (let rowIndex = 0; rowIndex < 6; rowIndex++) {
+                const row = new St.BoxLayout({
+                    orientation: Clutter.Orientation.HORIZONTAL,
+                    style_class: 'sticky-calendar-week',
+                    x_align: Clutter.ActorAlign.CENTER,
+                });
+                for (let column = 0; column < 7; column++) {
+                    const date = new Date(first);
+                    date.setDate(first.getDate() + rowIndex * 7 + column);
+                    date.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+                    const classes = ['sticky-calendar-day'];
+                    if (date.getMonth() !== shown.getMonth())
+                        classes.push('other-month');
+                    if (sameDay(date, today))
+                        classes.push('today');
+                    if (sameDay(date, selected))
+                        classes.push('selected');
+                    const button = new St.Button({
+                        style_class: classes.join(' '),
+                        can_focus: true,
+                        label: `${date.getDate()}`,
+                        accessible_name: fullDateFormat.format(date),
+                    });
+                    button._date = date;
+                    button.connectObject('clicked', () => commit(date), this);
+                    row.add_child(button);
+                }
+                days.add_child(row);
+            }
+        };
+        rebuild();
+        return {
+            actor,
+            get selectedDate() {
+                return new Date(selected);
+            },
+            setDate(date) {
+                selected = new Date(date);
+                selected.setSeconds(0, 0);
+                shown = new Date(selected.getFullYear(), selected.getMonth(), 1);
+                rebuild();
+            },
+        };
+    }
+
+
+
+    // Build a popup menu for selecting/creating categories.
+// Shows existing categories + an entry for typing a new one (with / for subcategories).
+    _buildCategoryPicker(view, run) {
+        const categories = this._getAllCategories();
+        const currentCategory = categoryPartsFromRelpath(view.note.filename).join('/');
+
+        // Create the popup menu
+        const menu = new PopupMenu.PopupMenu(view.grip, 0.0, St.Side.TOP);
+        menu.actor.add_style_class_name('sticky-category-picker');
+        menu.actor.style = 'min-width: 280px;';
+
+        // Entry for new category at the top
+        const entry = new St.Entry({
+            style_class: 'sticky-category-entry',
+            x_expand: true,
+            can_focus: true,
+            hint_text: t('Type category or subcategory (pasta/subpasta)'),
+        });
+        entry.text = currentCategory;
+        const entryItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        entryItem.actor.add_child(entry);
+        entryItem.actor.style = 'padding: 8px 12px;';
+        menu.addMenuItem(entryItem);
+
+        // Separator
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // "No category" option
+        const noCatItem = new PopupMenu.PopupMenuItem(t('(no category)'));
+        noCatItem.actor.style = currentCategory === '' ? 'font-weight: bold;' : '';
+        noCatItem.connectObject('activate', () => {
+            run(() => this._applyCategory(view, ''));
+            menu.close({animate: false});
+        }, this);
+        menu.addMenuItem(noCatItem);
+
+        // Existing categories
+        if (categories.length) {
+            menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            for (const cat of categories) {
+                const catItem = new PopupMenu.PopupMenuItem(cat.replace(/\//g, ' / '));
+                catItem.actor.style = cat === currentCategory ? 'font-weight: bold;' : '';
+                catItem.connectObject('activate', () => {
+                    run(() => this._applyCategory(view, cat));
+                    menu.close({animate: false});
+                }, this);
+                menu.addMenuItem(catItem);
+            }
+        }
+
+        // Handle entry activation
+        entry.get_clutter_text().connectObject('activate', () => {
+            const category = entry.get_text().trim();
+            run(() => this._applyCategory(view, category));
+            menu.close({animate: false});
+        }, this);
+
+        // Focus the entry when menu opens
+        menu.actor.connect('notify::open-state', () => {
+            if (menu.isOpen) {
+                entry.grab_key_focus();
+                // Select all text for easy replacement
+                entry.get_clutter_text().select_all();
+            }
+        });
+
+        // Register with menuManager so it participates in menu management
+        Main.layoutManager.uiGroup.add_child(menu.actor);
+        this._menuManager.addMenu(menu);
+        menu.connect('open-state-changed', (_menu, open) => {
+            if (!open) {
+                this._menuManager.removeMenu(_menu);
+                Main.layoutManager.uiGroup.remove_child(_menu.actor);
+            }
+        });
+
+        return menu;
+    }
+
+    _buildExternalEditorChooser(view, run) {
+        const box = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-external-editors',
+            x_expand: true,
+        });
+        const apps = this._externalAppsForView(view);
+        if (!apps.length) {
+            box.add_child(new St.Label({
+                text: t('No compatible applications'),
+                style_class: 'sticky-note-caption',
+                x_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        for (const app of apps) {
+            const name = app.get_display_name?.() ?? app.get_name?.() ?? t('Application');
+            const button = new St.Button({
+                style_class: 'sticky-external-editor',
+                can_focus: true,
+                reactive: true,
+                accessible_name: name,
+                x_expand: true,
+            });
+            const content = new St.BoxLayout({
+                orientation: Clutter.Orientation.HORIZONTAL,
+                style_class: 'sticky-external-editor-content',
+                x_expand: true,
+            });
+            const gicon = app.get_icon?.();
+            content.add_child(gicon
+                ? new St.Icon({gicon, icon_size: 16})
+                : new St.Icon({icon_name: 'application-x-executable-symbolic', icon_size: 16}));
+            content.add_child(new St.Label({
+                text: name,
+                x_expand: true,
+                x_align: Clutter.ActorAlign.START,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            button.add_child(content);
+            button.connectObject('clicked', () => run(() => this._launchExternalEditor(view, app)), this);
+            box.add_child(button);
+        }
+        box._apps = apps;
+        return box;
+    }
+
+    _openMenu(view) {
         this._closeMenu();
         // Opening the menu of another note leaves the note being edited.
-        if (global.stage.get_key_focus() !== view.text)
+        // Opening this note's own menu must not silently force preview mode.
+        view._inNoteMenu = true;
+        if (this._focused !== view && global.stage.get_key_focus() !== view.text)
             this._blur();
         this._focus(view, false);
         const menu = new PopupMenu.PopupMenu(view.grip, 0.0, St.Side.TOP);
-        this._addColorSwatches(menu, view);
-        const later = fn => {
-            this._menuThen = fn;
-        };
         const isTodo = view.note.kind === 'todo';
-        menu.addAction(t('New note'), () => later(() => this._create(null, this._boardPrefix(view))), 'document-new-symbolic');
-        if (!isTodo)
-            menu.addAction(t('Duplicate'), () => later(() => this._duplicate(view)), 'view-dual-symbolic');
-        menu.addAction(t('Copy note'), () => later(() => this._copyNote(view)), 'edit-copy-symbolic');
-        menu.addAction(
-            t(view.previewMode ? (isTodo ? 'Edit tasks' : 'Edit Markdown')
-                : (isTodo ? 'Preview tasks' : 'Preview Markdown')),
-            () => later(() => this._togglePreview(view)),
-            view.previewMode ? 'document-edit-symbolic' : 'document-preview-symbolic');
-        if (isTodo)
-            menu.addAction(t('Sort tasks'), () => later(() => this._sortTodo(view)), 'view-sort-descending-symbolic');
-        menu.addAction(
-            t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
-            () => later(() => this._togglePin(view)),
-            view.note.pinned ? 'window-restore-symbolic' : 'view-pin-symbolic');
-        menu.addAction(
-            t(view.note.locked ? 'Unlock' : 'Lock'),
-            () => later(() => this._toggleLock(view)),
-            view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic');
-        if ((view.note.kind ?? 'note') === 'note') {
-            const expires = parseExpires(view.note.expires);
-            let caption = null;
-            if (expires) {
-                caption = new PopupMenu.PopupMenuItem(
-                    `${t('Expires')}: ${formatExpires(expires)}`);
-                caption.setSensitive(false);
-                menu.addMenuItem(caption);
+        const kind = view.note.kind ?? 'note';
+        const isImage = isImageNoteFormat(view.note.format);
+        if (!isImage)
+            this._addColorSwatches(menu, view);
+        const run = fn => {
+            this._menuThen = fn;
+            if (this._menu?.isOpen)
+                this._menu.close({animate: false});
+            else {
+                this._menuThen = null;
+                fn();
             }
-            // Inline editor row: keeps the menu open, seeded when set.
-            const editorRow = new St.BoxLayout({
-                orientation: Clutter.Orientation.HORIZONTAL,
-                style_class: 'expiry-editor',
-                x_expand: true,
-            });
-            const icon = new St.Label({text: '⌛', style_class: 'expiry-icon'});
-            const entry = new St.Entry({
-                style_class: 'sticky-swatch-entry',
-                x_expand: true,
-                can_focus: true,
-                hint_text: 'YYYY-MM-DD HH:MM',
-            });
-            const apply = new St.Button({
-                style_class: 'sticky-swatch-apply',
-                can_focus: true,
-                label: '✓',
-                accessible_name: t('Apply'),
-            });
-            const applyExpiry = () => {
-                const date = parseExpires(entry.get_text());
-                if (!date)
-                    return; // Invalid input: nothing happens.
-                this._setExpiry(view, date);
-                if (caption)
-                    caption.label.text = `${t('Expires')}: ${formatExpires(date)}`;
-            };
-            entry.connectObject('activate', applyExpiry, this);
-            apply.connectObject('clicked', applyExpiry, this);
-            if (expires)
-                entry.text = formatExpires(expires);
-            editorRow.add_child(icon);
-            editorRow.add_child(entry);
-            editorRow.add_child(apply);
-            menu.box.add_child(editorRow);
-            menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            if (expires) {
-                menu.addAction(t('Clear expiry'),
-                    () => later(() => this._clearExpiry(view)), 'edit-undo-symbolic');
-            } else {
-                menu.addAction(t('In 1 hour'),
-                    () => later(() => this._setExpiry(view, new Date(Date.now() + 3600e3))),
-                    'alarm-symbolic');
-                menu.addAction(t('Tomorrow 09:00'),
-                    () => later(() => {
-                        const date = new Date();
-                        date.setDate(date.getDate() + 1);
-                        date.setHours(9, 0, 0, 0);
-                        this._setExpiry(view, date);
-                    }),
-                    'alarm-symbolic');
-                menu.addAction(t('In 1 week'),
-                    () => later(() => this._setExpiry(view, new Date(Date.now() + 7 * 86400e3))),
-                    'alarm-symbolic');
-            }
+        };
+        // Rectangular grid of icon buttons in 3 rows (replaces the long list).
+        const grid = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'sticky-menu-grid',
+            x_expand: true,
+        });
+        let expiryRow = null;
+        const externalEditorRow = this._buildExternalEditorChooser(view, run);
+        externalEditorRow.visible = false;
+        if (kind === 'note') {
+            expiryRow = this._buildExpiryEditor(view);
+            expiryRow.visible = false;
         }
-        const zoomItem = new PopupMenu.PopupMenuItem(`${t('Zoom')}: ${view.note.zoom ?? 100}%`);
-        zoomItem.setSensitive(false);
-        menu.addMenuItem(zoomItem);
-        menu.addAction(t('Zoom out'), () => later(() => this._stepZoom(view, -10)), 'zoom-out-symbolic');
-        menu.addAction(t('Zoom in'), () => later(() => this._stepZoom(view, 10)), 'zoom-in-symbolic');
-        if (!isTodo)
-            menu.addAction(t('Delete'), () => later(() => this._delete(view)), 'edit-delete-symbolic');
+        const addRow = (...buttons) => {
+            const row = new St.BoxLayout({
+                orientation: Clutter.Orientation.HORIZONTAL,
+                style_class: 'sticky-menu-row',
+                x_align: Clutter.ActorAlign.CENTER,
+            });
+            for (const button of buttons)
+                if (button)
+                    row.add_child(button);
+            grid.add_child(row);
+        };
+        let previewLabel;
+        if (isTodo)
+            previewLabel = view.previewMode ? 'Edit tasks' : 'Preview tasks';
+        else if (view.note.format === 'text')
+            previewLabel = view.previewMode ? 'Edit text' : 'Preview text';
+        else if (view.note.format === 'html')
+            previewLabel = view.previewMode ? 'Edit HTML source' : 'Preview HTML';
+        else
+            previewLabel = view.previewMode ? 'Edit Markdown' : 'Preview Markdown';
+        // Row 1: create, duplicate, copy, preview
+        addRow(
+            this._mkMenuButton('document-new-symbolic', t('New note'), () => run(() => this._create(null))),
+            !isImage
+                ? this._mkMenuButton('view-dual-symbolic', t('Duplicate'),
+                    () => run(() => this._duplicate(view)), !isTodo && view.note.format === 'markdown')
+                : null,
+            !isImage
+                ? this._mkMenuButton('edit-copy-symbolic', t('Copy note'),
+                    () => run(() => this._copyNote(view)))
+                : null,
+            !isImage
+                ? this._mkMenuButton(
+                    view.previewMode ? 'document-edit-symbolic' : 'document-preview-symbolic',
+                    t(previewLabel), () => run(() => this._togglePreview(view)))
+                : null,
+        );
+        // Row 2: pin, lock, category (or sort for TODO), expiry
+        addRow(
+            this._mkMenuButton(view.note.pinned ? 'window-restore-symbolic' : 'view-pin-symbolic',
+                t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
+                () => run(() => this._togglePin(view))),
+            !isImage
+                ? this._mkMenuButton(
+                    view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic',
+                    t(view.note.locked ? 'Unlock' : 'Lock'),
+                    () => run(() => this._toggleLock(view)))
+                : null,
+            kind === 'note'
+                ? this._mkMenuButton('folder-symbolic', t('Category'),
+                    () => {
+                        const picker = this._buildCategoryPicker(view, run);
+                        picker.open({animate: false});
+                    })
+                : this._mkMenuButton('view-sort-descending-symbolic', t('Sort tasks'),
+                    () => run(() => this._sortTodo(view))),
+            kind === 'note'
+                ? this._mkMenuButton('alarm-symbolic', t('Expiry'), () => {
+                    expiryRow.visible = !expiryRow.visible;
+                    if (expiryRow.visible) {
+                        externalEditorRow.visible = false;
+                    }
+                })
+                : null,
+        );
+        // Row 3: zoom out, zoom level, zoom in, delete
+        const zoomLabel = isImage ? null : new St.Label({
+            text: `${view.note.zoom ?? 100}%`,
+            style_class: 'sticky-menu-zoom-label',
+            y_align: Clutter.ActorAlign.CENTER,
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        addRow(
+            !isImage
+                ? this._mkMenuButton('zoom-out-symbolic', t('Zoom out'),
+                    () => run(() => this._stepZoom(view, -10)))
+                : null,
+            zoomLabel,
+            !isImage
+                ? this._mkMenuButton('zoom-in-symbolic', t('Zoom in'),
+                    () => run(() => this._stepZoom(view, 10)))
+                : null,
+            this._mkMenuButton('document-open-symbolic', t('Edit in'), () => {
+                externalEditorRow.visible = !externalEditorRow.visible;
+                if (externalEditorRow.visible) {
+                    if (expiryRow)
+                        expiryRow.visible = false;
+                }
+            }),
+            this._mkMenuButton('edit-delete-symbolic', t('Delete'), () => run(() => this._delete(view)), !isTodo),
+        );
+        menu.box.add_child(grid);
+        if (expiryRow)
+            grid.add_child(expiryRow);
+        grid.add_child(externalEditorRow);
+        menu._actionGrid = grid;
+        menu._expiryEditor = expiryRow;
+        menu._externalEditorChooser = externalEditorRow;
         this._finishMenu(menu, view);
     }
 
@@ -3353,9 +3722,45 @@ export class NoteBoard {
                 this._scheduleMenuDrop();
         });
         Main.layoutManager.uiGroup.add_child(menu.actor);
-        menu.actor.hide();
         this._menuManager.addMenu(menu);
-        menu.open();
+        const opened = menu.open({animate: false});
+        if (opened === false)
+            console.warn('Sticky Notes: context menu could not be opened');
+    }
+
+    // Context menu for text editing (Cut/Copy/Paste/Select All) in edit mode.
+    _openTextEditMenu(view, _event) {
+        this._closeMenu();
+        this._focus(view, false);
+        // Anchor to view.grip (not view.text) so the menu's source actor
+        // is never hidden. The menu still steals key focus from view.text,
+        // but the _inTextEditMenu guard prevents _autoPreview from hiding
+        // view.text and switching to preview mode.
+        view._inTextEditMenu = true;
+        const menu = new PopupMenu.PopupMenu(view.grip, 0.0, St.Side.TOP);
+        const text = view.text;
+        const hasSelection = text.get_selection().length > 0;
+        const clipboard = St.Clipboard.get_default();
+        const later = fn => {
+            this._menuThen = fn;
+        };
+
+        menu.addAction(t('Cut'), () => later(() => this._cutTextSelection(view)), 'edit-cut-symbolic')
+            .setSensitive(hasSelection && !view.note.locked);
+        menu.addAction(t('Copy'), () => later(() => this._copyTextSelection(view)), 'edit-copy-symbolic')
+            .setSensitive(hasSelection);
+        const pasteItem = menu.addAction(
+            t('Paste'), () => later(() => this._pasteTextClipboard(view)), 'edit-paste-symbolic');
+        pasteItem.setSensitive(false);
+        menu.addAction(t('Select All'), () => later(() => this._selectAllText(view)), 'edit-select-all-symbolic')
+            .setSensitive(text.text.length > 0);
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        menu.addAction(t('Note menu'), () => later(() => this._openMenu(view)), 'view-more-symbolic');
+        this._finishMenu(menu, view);
+        clipboard.get_text(St.ClipboardType.CLIPBOARD, (_clipboard, value) => {
+            if (this._menu === menu)
+                pasteItem.setSensitive(!!value && !view.note.locked);
+        });
     }
 
     // Expiry sweep: delete notes whose deadline has passed. Runs once after
@@ -3372,114 +3777,8 @@ export class NoteBoard {
         }
     }
 
-    // Board context menu: a board window is not a note, it gets its own.
-    _openBoardMenu(view) {
-        this._closeMenu();
-        const key = view.note.boardKey;
-        this._focus(view, false);
-        const menu = new PopupMenu.PopupMenu(view.grip, 0.0, St.Side.TOP);
-        this._addColorSwatches(menu, view);
-        const later = fn => {
-            this._menuThen = fn;
-        };
-        menu.addAction(t('New note in board'), () => later(() => this._create(null, `${key}/`)), 'document-new-symbolic');
-        menu.addAction(t('New board in board'), () => later(() => this._createBoard(key)), 'folder-new-symbolic');
-        menu.addAction(t('Open board folder'), () => later(() => this._openFolder(key)), 'folder-symbolic');
-        menu.addAction(
-            t(view.note.collapsed ? 'Expand board' : 'Collapse board'),
-            () => later(() => this._toggleBoardCollapsed(view)),
-            view.note.collapsed ? 'pan-end-symbolic' : 'pan-down-symbolic');
-        menu.addAction(
-            t(view.note.pinned ? 'Unpin note' : 'Pin above windows'),
-            () => later(() => this._togglePin(view)),
-            view.note.pinned ? 'window-restore-symbolic' : 'view-pin-symbolic');
-        menu.addAction(
-            t(view.note.locked ? 'Unlock' : 'Lock'),
-            () => later(() => this._toggleLock(view)),
-            view.note.locked ? 'changes-prevent-symbolic' : 'changes-allow-symbolic');
-        const zoomItem = new PopupMenu.PopupMenuItem(`${t('Zoom')}: ${view.note.zoom ?? 100}%`);
-        zoomItem.setSensitive(false);
-        menu.addMenuItem(zoomItem);
-        menu.addAction(t('Zoom out'), () => later(() => this._stepZoom(view, -10)), 'zoom-out-symbolic');
-        menu.addAction(t('Zoom in'), () => later(() => this._stepZoom(view, 10)), 'zoom-in-symbolic');
-        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        menu.addAction(t('Unboard'), () => later(() => this._unboardAction(key)), 'go-up-symbolic');
-        this._finishMenu(menu, view);
-    }
-
-    _openFolder(key) {
-        const dir = Gio.File.new_for_path(GLib.build_filenamev([this._files.directory, key]));
-        try {
-            Gio.AppInfo.launch_default_for_uri(dir.get_uri(), null);
-        } catch (error) {
-            console.warn(`Sticky Notes: could not open ${dir.get_path()}: ${error}`);
-        }
-    }
-
-    _unboardAction(key) {
-        if (!this._files?.removeBoard(key))
-            return;
-        this._unboard(key);
-    }
-
-    _createBoard(parentKey = null) {
-        const root = this._files?.directory;
-        if (!root)
-            return;
-        const parentBoard = parentKey ? this._boards.get(parentKey) : null;
-        const areas = this._workAreas();
-        let name = null;
-        let dirRel = null;
-        for (let n = 1; n <= 500; n++) {
-            name = `board-${n}`;
-            dirRel = parentKey ? `${parentKey}/${name}` : name;
-            const exists = GLib.file_test(GLib.build_filenamev([root, dirRel]), GLib.FileTest.EXISTS);
-            if (!exists && !this._boards.has(dirRel))
-                break;
-        }
-        if (!name)
-            return;
-        const w = 420;
-        const h = 300;
-        let x;
-        let y;
-        if (parentBoard?.view) {
-            const count = [...this._views.values()].filter(v => v.note.board === parentKey).length;
-            x = 24 + (count * 30) % Math.max(1, parentBoard.note.w - w - 24);
-            y = 64 + (count * 30) % Math.max(1, parentBoard.note.h - h - 64);
-        } else {
-            const obstacles = this._store.notes.map(note => [note.x, note.y, note.w, note.h]);
-            [x, y] = freshOrigin(obstacles, areas, w, h, null, null);
-        }
-        const dirPath = GLib.build_filenamev([root, dirRel]);
-        try {
-            GLib.mkdir_with_parents(dirPath, 0o755);
-            const content = [
-                '---',
-                `title: ${name}`,
-                `gnome-sticky-id: ${this._store.next_id++}`,
-                `gnome-sticky-x: ${x}`,
-                `gnome-sticky-y: ${y}`,
-                `gnome-sticky-width: ${w}`,
-                `gnome-sticky-height: ${h}`,
-                `gnome-sticky-expanded-height: ${h}`,
-                'gnome-sticky-color: 3',
-                'gnome-sticky-zoom: 100',
-                '---',
-                '',
-            ].join('\n');
-            Gio.File.new_for_path(GLib.build_filenamev([dirPath, '.board.md']))
-                .replace_contents(new TextEncoder().encode(content), null, false,
-                    Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-        } catch (error) {
-            console.error(`Sticky Notes: could not create board ${dirRel}: ${error}`);
-            return;
-        }
-        this._files.queueScan();
-    }
-
     _markCurrent(colors, view) {
-        const custom = view.note.custom_color ? normalizeHexColor(view.note.custom_color) : null;
+        const custom = view.note.custom_color ? resolveNameToColor(view.note.custom_color) : null;
         for (const row of colors.get_children()) {
             if (!row.has_style_class_name('sticky-swatch-row'))
                 continue;
@@ -3522,13 +3821,18 @@ export class NoteBoard {
         if (this._menuDropId) {
             GLib.Source.remove(this._menuDropId);
             this._menuDropId = 0;
-            this._menuThen = null;
         }
+        this._menuThen = null;
         if (!this._menu)
             return;
         if (this._menuId) {
             this._menu.disconnect(this._menuId);
             this._menuId = 0;
+        }
+        // Clear text-edit menu guard on the view that owned this menu
+        if (this._menuView) {
+            this._menuView._inTextEditMenu = false;
+            this._menuView._inNoteMenu = false;
         }
         this._menuView = null;
         this._menu.destroy();

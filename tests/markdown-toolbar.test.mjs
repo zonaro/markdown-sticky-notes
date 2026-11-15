@@ -22,6 +22,7 @@ import {
     numberedPrefix,
     tableSkeleton,
     toggleBoxAt,
+    toggleCheckboxLine,
     toggleMarker,
 } from '../extension/format.js';
 
@@ -54,6 +55,13 @@ test('lineMark keeps reading the legacy glyph markers', () => {
     assert.deepEqual(lineMark('• item'), {kind: 'bullet', chars: 2});
     assert.deepEqual(lineMark('☐︎ item'), {kind: 'check', done: false, chars: 3, legacy: true, toggle: 0});
     assert.equal(lineMark('☑︎ item').done, true);
+});
+
+test('preview checkbox toggles preserve Markdown and indentation', () => {
+    assert.equal(toggleCheckboxLine('- [ ] open'), '- [x] open');
+    assert.equal(toggleCheckboxLine('  * [X] done'), '  * [ ] done');
+    assert.equal(toggleCheckboxLine('+ [x] done'), '+ [ ] done');
+    assert.equal(toggleCheckboxLine('- ordinary item'), null);
 });
 
 test('listContinuation continues numbered lists with the next number', () => {

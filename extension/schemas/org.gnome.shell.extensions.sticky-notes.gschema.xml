@@ -37,12 +37,6 @@
       <range min="120" max="1200"/>
       <summary>Height of a newly created note</summary>
     </key>
-    <key name="max-width" type="i">
-      <default>440</default>
-      <range min="240" max="960"/>
-      <summary>Widest a note can be</summary>
-      <description>About 48 characters at the normal text size. Can be raised up to 960.</description>
-    </key>
     <key name="todo-file" type="s">
       <default>"~/todo.txt"</default>
       <summary>Path of the todo.txt file mirrored as a TODO note</summary>
@@ -52,12 +46,6 @@
       <default>""</default>
       <summary>Saved layout of the TODO note, as JSON</summary>
       <description>Owned by the extension. Position, size, color, font size, pin/lock state and workspace of the TODO note. Leave empty to reset to defaults.</description>
-    </key>
-    <key name="max-height" type="i">
-      <default>460</default>
-      <range min="180" max="1200"/>
-      <summary>Tallest a note can be</summary>
-      <description>About 20 lines at the normal text size. Can be raised up to 1200.</description>
     </key>
   </schema>
 </schemalist>

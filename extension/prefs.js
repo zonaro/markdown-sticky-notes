@@ -71,28 +71,6 @@ export default class StickyNotesPreferences extends ExtensionPreferences {
         size.add(spinRow(settings, 'note-height', t('Height'), t('Pixels'), 120, 1200));
         page.add(size);
 
-        const limit = new Adw.PreferencesGroup({
-            title: t('Size limit'),
-            description: t('Dragging stops at this size. The defaults are 440 by 460, and both can be raised.'),
-        });
-        limit.add(spinRow(
-            settings,
-            'max-width',
-            t('Maximum width'),
-            t('440 is about 48 characters. Up to 960.'),
-            240,
-            960,
-        ));
-        limit.add(spinRow(
-            settings,
-            'max-height',
-            t('Maximum height'),
-            t('460 is about 20 lines. Up to 1200.'),
-            180,
-            1200,
-        ));
-        page.add(limit);
-
         const shortcuts = new Adw.PreferencesGroup({
             title: t('Shortcuts'),
             description: t('Click a row, then press the new keys. Backspace disables it.'),

@@ -47,3 +47,4 @@ fi
 
 echo "Installed: $ext"
 echo "Your Markdown files remain in: $HOME/notes/"
+echo "On Wayland, log out and back in before testing updated extension JavaScript."

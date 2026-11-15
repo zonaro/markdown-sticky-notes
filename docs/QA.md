@@ -35,7 +35,7 @@
 - [ ] Rename `tarefas.markdown` to `novas-tarefas.md`; same note content and metadata remain.
 - [ ] Delete a note; *only* its file disappears, without an extension trash.
 - [ ] Delete `reuniao.md` externally; the sticky note disappears and the file stays deleted.
-- [ ] `.txt` and `.markdown` files in folders at any depth are notes (Markdown renders normally); `.md`/`.markdown` directly in `~/notes/` are notes; `.board.md` files (any depth) never become notes.
+- [ ] `.txt`, `.md` and `.markdown` files at any depth are independent notes; hidden files and folders never become notes, including legacy `.board.md` metadata.
 - [ ] Disable and enable the extension; verify no duplicates.
 
 ## Frontmatter and installer
@@ -65,28 +65,28 @@
 - [ ] An `http(s)://` image downloads once into `~/.cache/markdown-sticky-notes/images/` and renders on later views; a non-image response or network failure falls back to the alt text.
 - [ ] A fenced block with info `dot` (graphviz installed) renders the diagram in the preview; with graphviz unavailable it renders as code plus an install hint; ` ```mermaid ` renders when `mmdc` is on PATH, otherwise code plus a hint; an invalid diagram body never breaks the preview.
 - [ ] Fenced blocks with any other info string keep rendering as monospace code.
-- [ ] Tiny and huge zoom levels: **A-**/**A+** (ribbon) and **Zoom in/out** (context menu) scale everything — frame, text, grip, preview, handles — from 5% to 200%; the note menu shows the current value; the zoom survives a session restart (`gnome-sticky-zoom`; the TODO note keeps it in `todo-layout`); `gnome-sticky-font-size` is no longer changed by these controls.
+- [ ] Tiny and huge zoom levels: **A-**/**A+** (ribbon), **Zoom in/out** (context menu) and `Ctrl+Scroll` scale only the written editor/preview content from 5% to 200%; frame size/position, grip/header, ribbon, buttons and resize handle do not move or resize; the note menu shows the current value; the zoom survives a session restart (`gnome-sticky-zoom`; the TODO note keeps it in `todo-layout`); `gnome-sticky-font-size` is no longer changed by these controls.
 
-- [ ] Expiring notes: "In 1 hour" on a note sets `gnome-sticky-expires` in its frontmatter, the `⌛` badge shows in the grip; after the hour passes the note disappears and its file is removed without any user interaction; "Clear expiry" removes the field and the badge; editing the frontmatter externally to a past/future time is honored on the next sweep (file wins); the TODO note and boards have no expiration option and never expire; a note already expired at load time is gone on the first sweep.
+- [ ] Expiring notes: "In 1 hour" on a note sets `gnome-sticky-expires` in its frontmatter, the `⌛` badge shows in the grip; after the hour passes the note disappears and its file is removed without any user interaction; "Clear expiry" removes the field and the badge; editing the frontmatter externally to a past/future time is honored on the next sweep (file wins); the special TODO note has no expiration option and never expires; a note already expired at load time is gone on the first sweep.
 
 ## Keyboard, mouse and colors
-- [ ] In edit mode: `Ctrl+B/I/U` bold/italic/underline; `Ctrl+Shift+X` strikethrough; `Ctrl+Shift+C` inline code; `Ctrl+Shift+7/8/9` numbered/bullet/checkbox lists (including shifted glyphs on US/ABNT keyboards); locked notes and non-editing state are unaffected.
+- [ ] In edit mode: `Ctrl+B/I/U` bold/italic/underline; `Ctrl+Shift+X` strikethrough; `Ctrl+Shift+C` inline code; `Ctrl+Shift+7/8/9` numbered/bullet/checkbox lists (including shifted glyphs on US/ABNT keyboards); `Ctrl+C/X/V/A` copy/cut/paste/select all; right-click on the text shows **Cut**, **Copy**, **Paste**, **Select All** and **Note menu**, while right-click outside editing keeps the note menu; locked notes and non-editing state are unaffected.
 - [ ] With the note focused and not in edit mode: `Ctrl+C` copies; `Ctrl+Delete` deletes (the note disappears and the file is removed); `Ctrl+Scroll` zooms 5–200%; `Middle click` copies; `Ctrl+Middle click` duplicates; in editing mode none of these steal typing or selection.
-- [ ] The last swatch (+) opens the custom color picker; typing `#RRGGBB`/`#RGB` updates the preview live; Enter or ✓ applies and persists in `gnome-sticky-color-custom`; invalid values are ignored; dark colors keep legible light ink; picking a preset clears the custom color; boards honor the same picker.
+- [ ] The last swatch (+) opens the custom color picker; typing `#RRGGBB`/`#RGB` updates the preview live; Enter or ✓ applies and persists in `gnome-sticky-color-custom`; invalid values are ignored; dark colors keep legible light ink; picking a preset clears the custom color.
 
-## Boards
-- [ ] Create `~/notes/projetos/.board.md` with `title: Projetos` and some Markdown; the board appears as a container window: its Markdown renders above the child notes, which appear inside as cards.
-- [ ] Boards nest: `projetos/2026/.board.md` and `projetos/2026/roadmaps/.board.md`; each level renders and stays interactive; nested boards hide with their parent; collapsing any board hides its whole subtree.
-- [ ] Dragging a board moves all of its descendants together; resizing the board keeps cards inside (children are clamped to the board); child notes can be dragged freely within the board.
-- [ ] Editing a child note updates its file; its frontmatter coordinates are relative to the board; `.board.md` stores the board's absolute position; renaming the folder in a file manager moves nothing except the path prefix.
-- [ ] **Unboard** from a board's context menu removes only its `.board.md`; all notes and nested boards rise one level in place, without any content change.
-- [ ] Deleting a `.board.md` externally behaves like Unboard; deleting a whole board folder removes all notes under it (they were its contents) without leaving orphan views or JS ERROR lines in the journal.
-- [ ] **New board** (top-bar menu) creates a board at the root; **New note in board** and **New board in board** (board menu) create inside that board; **Open board folder** opens the folder.
-- [ ] In the top-bar menu, **Delete all notes** opens a submenu with two options: **Permanently delete every Markdown note** (notes in every folder die; boards remain) and **Delete a board** — a live list of boards by title; activating one deletes the board folder recursively (notes, nested boards and its `.board.md`), and everything disappears from the desktop without JS ERROR in the journal. With no boards, the submenu shows an insensitive "No boards" item.
-- [ ] Boards respect workspaces, pin state, hiding and the **Show/Hide notes** toggle exactly like notes.
-- [ ] Restart the session: board position, size, collapsed state, color, zoom, pin/lock and workspace survive; unrelated frontmatter in `.board.md` is preserved on save.
+## Folder categories
+- [ ] Create `~/notes/projetos/2026/ideia.md` without marker files: an independent desktop note appears with **(projetos / 2026)** in its header. A root note and the special TODO note have no category pill.
+- [ ] Names with spaces, accents, `&` and `<` render literally, without markup interpretation. Long category paths ellipsize and expose the complete label to accessibility tools.
+- [ ] Resize to the minimum width, set/clear expiration, change custom colors and zoom to 5%/200%: category, drag affordance and expiry badge never overlap; header geometry does not scale with content.
+- [ ] Focus and edit a nested note repeatedly, including after a monitor save and a pin/unpin: it remains visible on its desktop layer. Each note moves independently; no container or folder window appears.
+- [ ] Move a note to a different folder, then rename that folder: the pill follows the complete new path and the Markdown body is preserved. Duplicate basenames in different folders stay distinct.
+- [ ] Duplicate a categorized note: the copy stays in that category. New notes from the top-bar menu start at the root.
+- [ ] Existing hidden `.board.md` files remain byte-for-byte unchanged and invisible. Their ordinary sibling notes still load with category pills. Hidden directories are ignored.
+- [ ] Deleting one note removes only its file. **Delete all notes** removes all ordinary notes but preserves category folders, hidden metadata, unrelated files and the special TODO file. No folder-deletion or container-creation actions remain in menus.
+- [ ] Restart the session: notes retain position, size, content zoom, colors, pin/lock and workspace; categories are re-derived from their paths. No JS ERROR appears on startup, creation, menu opening or teardown.
 
 ## Diagnostics
+- [ ] Run `sh tests/shell-smoke.sh` for isolated real-Shell regression checks. Record the command exit code and the printed artifacts directory (`result.json`, `desktop.png`, `shell.log`). This uses disposable fixtures only; it does not validate the active desktop's personal notes or replace post-login acceptance.
 Run these commands and attach the output only if there is a failure:
 
 ```bash

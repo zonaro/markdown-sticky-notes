@@ -16,7 +16,6 @@ const FIELDS = {
     spans: 'gnome-sticky-spans',
     sizes: 'gnome-sticky-sizes',
     zoom: 'gnome-sticky-zoom',
-    collapsed: 'gnome-sticky-collapsed',
     custom_color: 'gnome-sticky-color-custom',
     expires: 'gnome-sticky-expires',
 };
@@ -37,11 +36,34 @@ function decode(value) {
     }
 }
 
+function assignMetadata(metadata, property, parsed) {
+    if (property === 'pinned' || property === 'locked') {
+        if (typeof parsed === 'boolean')
+            metadata[property] = parsed;
+    } else if (property === 'spans' || property === 'sizes') {
+        if (Array.isArray(parsed))
+            metadata[property] = parsed;
+    } else if (property === 'custom_color' || property === 'expires') {
+        if (typeof parsed === 'string')
+            metadata[property] = parsed;
+    } else if (Number.isInteger(parsed)) {
+        metadata[property] = parsed;
+    }
+}
+
 // A raw document carries the text verbatim: no frontmatter, no metadata.
 // Used for the todo.txt file, which must stay byte-compatible with other
 // todo.txt tools.
 export function parseRawDocument(source) {
-    return {body: source, metadata: {}, header: [], hasFrontmatter: false, raw: true};
+    return {
+        body: source,
+        metadata: {},
+        header: [],
+        hasFrontmatter: false,
+        hasMetadata: false,
+        format: 'text',
+        raw: true,
+    };
 }
 
 export function parseDocument(source) {
@@ -69,20 +91,16 @@ export function parseDocument(source) {
         if (value === undefined)
             continue;
         const parsed = decode(value);
-        if (property === 'pinned' || property === 'locked' || property === 'collapsed') {
-            if (typeof parsed === 'boolean')
-                metadata[property] = parsed;
-        } else if (property === 'spans' || property === 'sizes') {
-            if (Array.isArray(parsed))
-                metadata[property] = parsed;
-        } else if (property === 'custom_color' || property === 'expires') {
-            if (typeof parsed === 'string')
-                metadata[property] = parsed;
-        } else if (Number.isInteger(parsed)) {
-            metadata[property] = parsed;
-        }
+        assignMetadata(metadata, property, parsed);
     }
-    return {body, metadata, header, hasFrontmatter};
+    return {
+        body,
+        metadata,
+        header,
+        hasFrontmatter,
+        hasMetadata: hasFrontmatter,
+        format: 'markdown',
+    };
 }
 
 export function writeDocument(note, previous = '') {
@@ -95,10 +113,36 @@ export function writeDocument(note, previous = '') {
         const value = note[property];
         if (value === undefined || value === null)
             return null;
-        // Collapsed only matters for boards; keep note frontmatter free of it.
-        if (property === 'collapsed' && value === false)
-            return null;
         return `${key}: ${JSON.stringify(value)}`;
     }).filter(Boolean);
     return `---\n${[...preserved, ...own].join('\n')}\n---\n${note.text ?? ''}`;
+}
+
+// Non-Markdown formats cannot carry YAML frontmatter without corrupting their
+// source. Their layout lives in a hidden JSON sidecar beside the source file.
+export function parseNoteMetadata(source) {
+    if (typeof source !== 'string' || !source.trim())
+        return {metadata: {}, hasMetadata: false};
+    try {
+        const parsed = JSON.parse(source);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+            return {metadata: {}, hasMetadata: false};
+        const values = parsed.metadata && typeof parsed.metadata === 'object' &&
+            !Array.isArray(parsed.metadata)
+            ? parsed.metadata
+            : parsed;
+        const metadata = {};
+        for (const property of Object.keys(FIELDS))
+            assignMetadata(metadata, property, values[property]);
+        return {metadata, hasMetadata: true};
+    } catch {
+        return {metadata: {}, hasMetadata: false};
+    }
+}
+
+export function writeNoteMetadata(note) {
+    const metadata = {};
+    for (const property of Object.keys(FIELDS))
+        assignMetadata(metadata, property, note[property]);
+    return `${JSON.stringify({version: 1, metadata}, null, 2)}\n`;
 }

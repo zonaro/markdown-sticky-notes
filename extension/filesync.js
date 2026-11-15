@@ -1,14 +1,25 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {parseDocument, parseRawDocument, writeDocument} from './document.js';
+import {
+    parseDocument,
+    parseNoteMetadata,
+    parseRawDocument,
+    writeDocument,
+    writeNoteMetadata,
+} from './document.js';
+import {
+    isImageNoteFormat,
+    isNoteFilename,
+    noteFormatForFilename,
+} from './note-format.js';
 
 // Disk is authoritative. A monitor updates the live UI, and all extension
 // writes go through the same snapshots to avoid its own monitor feedback.
 //
 // Notes are identified by the path RELATIVE to the notes root (e.g.
-// 'projects/2026/idea.md'), not by basename — boards make folders
-// significant. The internal note.filename property carries the relpath.
+// 'projects/2026/idea.md'), not by basename: the folder path is the note
+// category. The internal note.filename property carries the relpath.
 
 // Resolve user input against the home directory: '~/x' and bare relative
 // paths go through the home directory, absolute paths pass through.
@@ -44,24 +55,26 @@ export function normalizeRelpath(path) {
     return segments.join('/');
 }
 
-export function isBoardFilePath(relpath) {
-    return !!relpath && GLib.path_get_basename(relpath).toLowerCase() === '.board.md';
-}
-
 export function isNoteRelpath(relpath) {
     const normalized = normalizeRelpath(relpath);
-    return !!normalized
-        && /\.(md|markdown|txt)$/i.test(normalized)
-        && !isBoardFilePath(normalized);
+    return !!normalized && isNoteFilename(normalized)
+        && !normalized.split('/').some(part => part.startsWith('.'));
+}
+
+export function noteSidecarRelpath(relpath) {
+    const normalized = normalizeRelpath(relpath);
+    if (!normalized || !isNoteRelpath(normalized))
+        return null;
+    const dirname = normalized.includes('/') ? GLib.path_get_dirname(normalized) : '';
+    const basename = GLib.path_get_basename(normalized);
+    const sidecar = `.${basename}.sticky-note.json`;
+    return dirname ? `${dirname}/${sidecar}` : sidecar;
 }
 
 export class NoteFiles {
-    // Markdown directory scan, recursive since the boards support (default),
-    // or a single raw file ({file: '/path/to/todo.txt'}) watched on its own.
-    // onBoards(presentBoards) fires with a Map(dirRel -> {raw, document})
-    // after every scan that can see the root; .board.md files never become
-    // notes.
-    constructor(onChange, onDelete, target = null, onBoards = null) {
+    // Supported-note directory scan, recursive: every folder under the root is
+    // a category. A single raw file target is reserved for todo.txt.
+    constructor(onChange, onDelete, target = null) {
         this._raw = false;
         this._rawFile = null;
         this._rawName = null;
@@ -83,11 +96,9 @@ export class NoteFiles {
         }
         this._onChange = onChange;
         this._onDelete = onDelete;
-        this._onBoards = typeof onBoards === 'function' ? onBoards : null;
         this._known = new Map();
         // Tombstones stop stale UI writes from resurrecting externally deleted notes.
         this._deleted = new Set();
-        this._knownBoards = new Map();
         this._monitors = new Map();
         this._monitorId = 0;
         this._scanId = 0;
@@ -145,20 +156,14 @@ export class NoteFiles {
     _file(name) {
         const rel = normalizeRelpath(name);
         if (!rel || !isNoteRelpath(rel))
-            throw new Error('Invalid Markdown note filename');
+            throw new Error('Invalid note filename');
         return Gio.File.new_for_path(GLib.build_filenamev([this.directory, rel]));
     }
-    _boardFile(dirRel) {
-        const rel = normalizeRelpath(dirRel ? `${dirRel}/.board.md` : '.board.md');
+    _sidecarFile(name) {
+        const rel = noteSidecarRelpath(name);
         if (!rel)
-            throw new Error('Invalid board path');
+            throw new Error('Invalid note metadata path');
         return Gio.File.new_for_path(GLib.build_filenamev([this.directory, rel]));
-    }
-    boardRelpath(dirRel) {
-        const rel = normalizeRelpath(dirRel ? `${dirRel}/.board.md` : '.board.md');
-        if (!rel)
-            throw new Error('Invalid board path');
-        return rel;
     }
     _watchFile(name) {
         if (this._raw) {
@@ -166,10 +171,10 @@ export class NoteFiles {
                 throw new Error('Invalid TODO filename');
             return Gio.File.new_for_path(this._rawFile);
         }
-        const rel = normalizeRelpath(name);
-        if (!rel)
-            throw new Error('Invalid note path');
-        return Gio.File.new_for_path(GLib.build_filenamev([this.directory, rel]));
+        return this._file(name);
+    }
+    file(name) {
+        return this._watchFile(name);
     }
     newFilename(prefix = '') {
         if (this._raw)
@@ -191,10 +196,9 @@ export class NoteFiles {
             return GLib.SOURCE_REMOVE;
         });
     }
-    // Recursively collect note relpaths and board dirs under root.
+    // Recursively collect note relpaths and folders under root.
     _walk() {
         const notes = new Set();
-        const boards = new Map();
         const dirs = new Set(['']);
         const pending = [''];
         while (pending.length) {
@@ -209,7 +213,7 @@ export class NoteFiles {
                 let info;
                 while ((info = iterator.next_file(null)) !== null) {
                     const name = info.get_name();
-                    if (name.startsWith('.') && name.toLowerCase() !== '.board.md')
+                    if (name.startsWith('.'))
                         continue; // Hidden files and directories stay out.
                     const childRel = relDir ? `${relDir}/${name}` : name;
                     if (info.get_file_type() === Gio.FileType.DIRECTORY) {
@@ -223,14 +227,7 @@ export class NoteFiles {
                     const normalized = normalizeRelpath(childRel);
                     if (!normalized)
                         continue;
-                    if (isBoardFilePath(normalized)) {
-                        // Boards live in folders; a root-level .board.md is
-                        // inert (never a note, never a board).
-                        if (relDir)
-                            boards.set(relDir, normalized);
-                        else
-                            console.warn('Sticky Notes: .board.md at the notes root is ignored; boards live in folders');
-                    } else if (isNoteRelpath(normalized))
+                    if (isNoteRelpath(normalized))
                         notes.add(normalized);
                 }
             } catch (error) {
@@ -241,7 +238,7 @@ export class NoteFiles {
                 iterator?.close(null);
             }
         }
-        return {notes, boards, dirs};
+        return {notes, dirs};
     }
     _updateMonitors(dirs) {
         if (this._raw)
@@ -270,10 +267,6 @@ export class NoteFiles {
             }
         }
     }
-    _readPath(path) {
-        const [, bytes] = path.load_contents(null);
-        return new TextDecoder().decode(bytes);
-    }
     scan() {
         const present = new Set();
         if (this._raw) {
@@ -295,7 +288,6 @@ export class NoteFiles {
             for (const rel of walk.notes)
                 present.add(rel);
             this._updateMonitors(walk.dirs);
-            this._scanBoards(walk.boards);
         }
         // Drop removed files first so a rename can safely preserve a note ID.
         for (const name of [...this._known.keys()]) {
@@ -311,22 +303,22 @@ export class NoteFiles {
             }
         }
         for (const name of [...present].sort((a, b) => a.localeCompare(b))) {
-            let document;
+            let entry;
             try {
-                document = this._read(name);
+                entry = this._readEntry(name);
             } catch (error) {
                 // Atomic replacements can briefly make a file unavailable.
                 console.warn(`Sticky Notes: could not read ${name}: ${error}`);
                 continue;
             }
-            if (this._known.get(name) === document) {
+            if (this._known.get(name)?.snapshot === entry.snapshot) {
                 this._deleted.delete(name);
                 continue;
             }
             this._deleted.delete(name);
-            this._known.set(name, document);
+            this._known.set(name, entry);
             try {
-                this._onChange(name, this._parse(document));
+                this._onChange(name, entry.document);
             } catch (error) {
                 // Keep the note tracked as known so a pathological file is not
                 // re-read forever; the sync of the remaining files continues.
@@ -334,113 +326,94 @@ export class NoteFiles {
             }
         }
     }
-    // Present boards (dirs holding a .board.md) arrive as Map(dirRel -> relpath).
-    _scanBoards(found) {
-        if (!this._onBoards)
-            return;
-        const present = new Map();
-        for (const [dirRel, relpath] of found) {
-            try {
-                const raw = this._readPath(this._boardFile(dirRel));
-                present.set(dirRel, {raw, document: parseDocument(raw), relpath});
-            } catch (error) {
-                console.warn(`Sticky Notes: could not read board ${relpath}: ${error}`);
-            }
-        }
-        for (const dirRel of [...this._knownBoards.keys()])
-            if (!present.has(dirRel))
-                this._knownBoards.delete(dirRel);
-        for (const [dirRel, entry] of present) {
-            const previous = this._knownBoards.get(dirRel);
-            if (previous === entry.raw)
-                continue;
-            this._knownBoards.set(dirRel, entry.raw);
-        }
-        this._onBoards(present);
-    }
-    // Recursively delete a folder inside the notes root (boards). Refuses
-    // anything that does not stay under the root.
-    removeFolder(dirRel) {
-        const rel = normalizeRelpath(dirRel);
-        if (!rel)
-            return false;
-        const dir = Gio.File.new_for_path(GLib.build_filenamev([this.directory, rel]));
-        try {
-            this._deleteTree(dir);
-        } catch (error) {
-            console.error(`Sticky Notes: could not delete ${rel}: ${error}`);
-            return false;
-        }
-        return true;
-    }
-    _deleteTree(file) {
-        if (file.query_file_type(Gio.FileQueryInfoFlags.NONE, null) === Gio.FileType.DIRECTORY) {
-            const child = file.enumerate_children(
-                'standard::name,standard::type', Gio.FileQueryInfoFlags.NONE, null);
-            try {
-                let info;
-                while ((info = child.next_file(null)) !== null)
-                    this._deleteTree(file.get_child(info.get_name()));
-            } finally {
-                child.close(null);
-            }
-        }
-        file.delete(null);
-    }
-    removeBoard(dirRel) {
-        const rel = this.boardRelpath(dirRel);
-        const file = this._boardFile(dirRel);
-        try {
-            file.delete(null);
-        } catch (error) {
-            if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND)) {
-                console.error(`Sticky Notes: could not delete board ${rel}: ${error}`);
-                return false;
-            }
-        }
-        this._knownBoards.delete(dirRel);
-        this.queueScan();
-        return true;
-    }
-    saveBoard(dirRel, rawText) {
-        const relpath = this.boardRelpath(dirRel);
-        const file = this._boardFile(dirRel);
-        const previous = this._knownBoards.get(dirRel);
-        if (previous !== undefined) {
-            try {
-                if (this._readPath(file) !== previous) {
-                    this.queueScan();
-                    return false; // Filesystem wins over a pending board write.
-                }
-            } catch (error) {
-                this.queueScan();
-                return false;
-            }
-        } else if (file.query_exists(null)) {
-            this.queueScan();
-            return false;
-        }
-        if (rawText === previous)
-            return true;
-        const parent = normalizeRelpath(GLib.path_get_dirname(relpath) === '.' ? null : GLib.path_get_dirname(relpath));
-        if (parent)
-            GLib.mkdir_with_parents(GLib.build_filenamev([this.directory, parent]), 0o755);
-        try {
-            file.replace_contents(new TextEncoder().encode(rawText), null, false,
-                Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-            this._knownBoards.set(dirRel, rawText);
-            return true;
-        } catch (error) {
-            console.error(`Sticky Notes: could not save board ${relpath}: ${error}`);
-            return false;
-        }
-    }
     _read(name) {
         const [, bytes] = this._watchFile(name).load_contents(null);
         return new TextDecoder().decode(bytes);
     }
-    _parse(content) {
-        return this._raw ? parseRawDocument(content) : parseDocument(content);
+    _sidecar(name) {
+        const file = this._sidecarFile(name);
+        if (!file.query_exists(null))
+            return {raw: '', metadata: {}, hasMetadata: false};
+        const [, bytes] = file.load_contents(null);
+        const raw = new TextDecoder().decode(bytes);
+        return {raw, ...parseNoteMetadata(raw)};
+    }
+    _fingerprint(name) {
+        const info = this._watchFile(name).query_info(
+            'standard::size,time::modified,time::modified-usec,etag::value',
+            Gio.FileQueryInfoFlags.NONE, null);
+        return [
+            info.get_size(),
+            info.get_attribute_uint64('time::modified'),
+            info.get_attribute_uint32('time::modified-usec'),
+            info.get_attribute_string('etag::value') ?? '',
+        ].join(':');
+    }
+    _readEntry(name) {
+        if (this._raw) {
+            const source = this._read(name);
+            return {
+                source,
+                metadataRaw: '',
+                snapshot: `raw:${source}`,
+                document: parseRawDocument(source),
+            };
+        }
+        const format = noteFormatForFilename(name);
+        if (!format)
+            throw new Error('Unsupported note format');
+        if (format === 'markdown') {
+            const source = this._read(name);
+            return {
+                source,
+                metadataRaw: '',
+                snapshot: `markdown:${source}`,
+                document: parseDocument(source),
+            };
+        }
+        const sidecar = this._sidecar(name);
+        if (isImageNoteFormat(format)) {
+            const fingerprint = this._fingerprint(name);
+            return {
+                source: null,
+                metadataRaw: sidecar.raw,
+                snapshot: `${format}:${fingerprint}\u0000${sidecar.raw}`,
+                document: {
+                    body: '',
+                    metadata: sidecar.metadata,
+                    hasFrontmatter: false,
+                    hasMetadata: sidecar.hasMetadata,
+                    format,
+                    path: this._watchFile(name).get_path(),
+                },
+            };
+        }
+        const source = this._read(name);
+        return {
+            source,
+            metadataRaw: sidecar.raw,
+            snapshot: `${format}:${source}\u0000${sidecar.raw}`,
+            document: {
+                body: source,
+                metadata: sidecar.metadata,
+                hasFrontmatter: false,
+                hasMetadata: sidecar.hasMetadata,
+                format,
+            },
+        };
+    }
+    _replace(file, text) {
+        file.replace_contents(new TextEncoder().encode(text), null, false,
+            Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+    }
+    _matchesDisk(name, known) {
+        if (!known)
+            return !this._watchFile(name).query_exists(null);
+        try {
+            return this._readEntry(name).snapshot === known.snapshot;
+        } catch {
+            return false;
+        }
     }
     save(note) {
         const name = note.filename;
@@ -459,7 +432,7 @@ export class NoteFiles {
             // the filesystem wins, and must not be silently overwritten.
             if (previous !== undefined) {
                 try {
-                    if (this._read(name) !== previous) {
+                    if (this._readEntry(name).snapshot !== previous.snapshot) {
                         this.queueScan();
                         return false;
                     }
@@ -472,12 +445,11 @@ export class NoteFiles {
                 return false;
             }
             const text = note.rawText ?? '';
-            if (text === previous)
+            if (text === previous?.source)
                 return true;
             try {
-                file.replace_contents(new TextEncoder().encode(text), null, false,
-                    Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-                this._known.set(name, text);
+                this._replace(file, text);
+                this._known.set(name, this._readEntry(name));
                 return true;
             } catch (error) {
                 console.error(`Sticky Notes: could not save ${name}: ${error}`);
@@ -494,17 +466,7 @@ export class NoteFiles {
         const previous = this._known.get(name);
         // Someone removed/modified the file before the file watcher fired:
         // the filesystem wins, and must not be silently overwritten.
-        if (previous !== undefined) {
-            try {
-                if (this._read(name) !== previous) {
-                    this.queueScan();
-                    return false;
-                }
-            } catch (error) {
-                this.queueScan();
-                return false;
-            }
-        } else if (file.query_exists(null)) {
+        if (!this._matchesDisk(name, previous)) {
             this.queueScan();
             return false;
         }
@@ -512,13 +474,25 @@ export class NoteFiles {
         const parent = rel && rel.includes('/') ? GLib.path_get_dirname(rel) : null;
         if (parent)
             GLib.mkdir_with_parents(GLib.build_filenamev([this.directory, parent]), 0o755);
-        const document = writeDocument(note, previous ?? '');
-        if (document === previous)
-            return true;
+        const format = noteFormatForFilename(name);
+        if (!format)
+            return false;
         try {
-            file.replace_contents(new TextEncoder().encode(document), null, false,
-                Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-            this._known.set(name, document);
+            if (format === 'markdown') {
+                const document = writeDocument(note, previous?.source ?? '');
+                if (document !== previous?.source)
+                    this._replace(file, document);
+            } else {
+                if (!isImageNoteFormat(format)) {
+                    const source = note.text ?? '';
+                    if (source !== previous?.source)
+                        this._replace(file, source);
+                }
+                const metadata = writeNoteMetadata(note);
+                if (metadata !== previous?.metadataRaw)
+                    this._replace(this._sidecarFile(name), metadata);
+            }
+            this._known.set(name, this._readEntry(name));
             return true;
         } catch (error) {
             console.error(`Sticky Notes: could not save ${name}: ${error}`);
@@ -534,8 +508,62 @@ export class NoteFiles {
                 return false;
             }
         }
+        if (!this._raw) {
+            try {
+                this._sidecarFile(name).delete(null);
+            } catch (error) {
+                if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+                    console.warn(`Sticky Notes: could not delete metadata for ${name}: ${error}`);
+            }
+        }
         this._known.delete(name);
         this._deleted.add(name);
+        return true;
+    }
+    // Move a note file to a new relpath, creating target folders. The scan
+    // that follows re-keys the note in the UI by its new filename.
+    move(oldName, newName) {
+        if (this._raw)
+            return false; // The TODO file has a fixed identity.
+        const oldRel = normalizeRelpath(oldName);
+        const newRel = normalizeRelpath(newName);
+        if (!oldRel || !newRel || !isNoteRelpath(newRel))
+            return false;
+        if (oldRel === newRel)
+            return true;
+        if (this._deleted.has(oldRel))
+            return false; // Tombstoned files never move.
+        const target = this._file(newName);
+        if (target.query_exists(null))
+            return false; // Refuse to overwrite an existing note.
+        const parent = newRel.includes('/') ? GLib.path_get_dirname(newRel) : null;
+        if (parent)
+            GLib.mkdir_with_parents(GLib.build_filenamev([this.directory, parent]), 0o755);
+        const source = this._file(oldName);
+        if (!source.query_exists(null))
+            return false; // Source file gone (zombie note), nothing to move.
+        try {
+            source.move(target, Gio.FileCopyFlags.NONE, null, null);
+        } catch (error) {
+            console.error(`Sticky Notes: could not move ${oldRel} to ${newRel}: ${error}`);
+            return false;
+        }
+        const oldSidecar = this._sidecarFile(oldRel);
+        if (oldSidecar.query_exists(null)) {
+            try {
+                oldSidecar.move(this._sidecarFile(newRel), Gio.FileCopyFlags.OVERWRITE, null, null);
+            } catch (error) {
+                console.warn(`Sticky Notes: could not move metadata for ${oldRel}: ${error}`);
+            }
+        }
+        this._known.delete(oldRel);
+        try {
+            this._known.set(newRel, this._readEntry(newRel));
+        } catch (error) {
+            console.warn(`Sticky Notes: could not refresh moved note ${newRel}: ${error}`);
+        }
+        this._deleted.delete(newRel);
+        this.queueScan();
         return true;
     }
 }

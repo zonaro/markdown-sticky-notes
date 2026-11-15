@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {parseDocument, writeDocument} from '../extension/document.js';
+import {
+    parseDocument,
+    parseNoteMetadata,
+    writeDocument,
+    writeNoteMetadata,
+} from '../extension/document.js';
 
 const note = {
     id: 7,
@@ -103,4 +108,49 @@ test('expiration is persisted as a string and survives other saves', () => {
     assert.equal(decoded.metadata.expires, '2026-11-20T18:30');
     const untouched = writeDocument({...note});
     assert.equal(parseDocument(untouched).metadata.expires, undefined);
+});
+
+test('custom color expressions survive document roundtrips verbatim', () => {
+    const encoded = writeDocument({...note, custom_color: 'calma profunda'});
+    const decoded = parseDocument(encoded);
+    assert.equal(decoded.metadata.custom_color, 'calma profunda');
+    assert.match(encoded, /gnome-sticky-color-custom: "calma profunda"/);
+});
+
+test('sidecar metadata roundtrips without carrying note content', () => {
+    const encoded = writeNoteMetadata({
+        ...note,
+        custom_color: 'calma profunda',
+        expires: '2099-11-20T18:30',
+    });
+    const decoded = parseNoteMetadata(encoded);
+    assert.equal(decoded.hasMetadata, true);
+    assert.equal(decoded.metadata.id, 7);
+    assert.equal(decoded.metadata.custom_color, 'calma profunda');
+    assert.equal(decoded.metadata.expires, '2099-11-20T18:30');
+    assert.doesNotMatch(encoded, /# Idea|Markdown note/);
+});
+
+test('invalid sidecar values fail closed', () => {
+    assert.deepEqual(parseNoteMetadata('{bad json'), {metadata: {}, hasMetadata: false});
+    const decoded = parseNoteMetadata(JSON.stringify({
+        metadata: {
+            id: '7',
+            pinned: 'true',
+            spans: 'not-an-array',
+            custom_color: 123,
+        },
+    }));
+    assert.deepEqual(decoded.metadata, {});
+});
+
+test('folder categories do not add container or category metadata to notes', () => {
+    const saved = writeDocument({...note, filename: 'projects/2026/idea.md', collapsed: true});
+    assert.doesNotMatch(saved, /gnome-sticky-(?:collapsed|category):/);
+    assert.equal(parseDocument(saved).body, note.text);
+    const previous = '---\ntitle: Personal\ngnome-sticky-collapsed: true\n---\nhello';
+    const updated = writeDocument({...note, text: 'edited'}, previous);
+    assert.match(updated, /gnome-sticky-collapsed: true/,
+        'obsolete metadata is preserved as unknown frontmatter, not acted on');
+    assert.equal(parseDocument(updated).metadata.collapsed, undefined);
 });

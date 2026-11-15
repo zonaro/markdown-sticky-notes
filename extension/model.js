@@ -51,7 +51,25 @@ export const WELCOME_TEXT = [
 export function emptyStore() {
     return {hidden: false, next_id: 1, notes: []};
 }
+// One category pill per folder level: ['pasta', 'subpasta'].
+// Dotted (hidden) path parts yield no pill at all.
+export function categoryPartsFromRelpath(filename) {
+    if (typeof filename !== 'string')
+        return [];
+    const path = filename.trim().replace(/\\/g, '/');
+    if (!path || path.startsWith('/') || /^[a-z]:/i.test(path))
+        return [];
+    const parts = path.split('/');
+    if (parts.some(part => !part || part.startsWith('.')))
+        return [];
+    return parts.slice(0, -1);
+}
 
+// A category is derived from the note's relative file path, never metadata.
+// Keep the label as plain text: the view must not interpret folder names as markup.
+export function categoryFromRelpath(filename) {
+    return categoryPartsFromRelpath(filename).join(' / ');
+}
 // Fixed identity of the TODO note. It is not parsed from frontmatter; the
 // raw todo.txt file and GSettings own its state.
 export const TODO_ID = -1;
@@ -132,8 +150,8 @@ export function expiresToFrontmatter(date) {
         + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-// Zoom percentage of a note or board: 5 to 200, default 100. Everything
-// in the view scales by this factor, not just the font.
+// Zoom percentage of note content: 5 to 200, default 100.
+// The note frame, header and toolbar do not scale with the content.
 export function normalizeZoom(zoom) {
     if (zoom === null || zoom === undefined)
         return 100;

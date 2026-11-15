@@ -1,7 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {parseExpires, formatExpires, expiresToFrontmatter, normalizeHexColor, hexIsDark, normalizeZoom} from '../extension/model.js';
+import {categoryFromRelpath, categoryPartsFromRelpath, parseExpires, formatExpires, expiresToFrontmatter, normalizeHexColor, hexIsDark, normalizeZoom} from '../extension/model.js';
+
+test('category is the complete folder path, independent of note format', () => {
+    assert.equal(categoryFromRelpath('note.md'), '');
+    assert.equal(categoryFromRelpath('projects/idea.md'), 'projects');
+    assert.equal(categoryFromRelpath('projects/2026/tasks.txt'), 'projects / 2026');
+    assert.equal(categoryFromRelpath('projects\\2026\\idea.markdown'), 'projects / 2026');
+    assert.equal(categoryFromRelpath('Notas pessoais/Ações & <ideias>/nota.md'),
+        'Notas pessoais / Ações & <ideias>');
+});
+
+test('category parts yields one pill per folder level', () => {
+    assert.deepEqual(categoryPartsFromRelpath('note.md'), []);
+    assert.deepEqual(categoryPartsFromRelpath('projects/idea.md'), ['projects']);
+    assert.deepEqual(categoryPartsFromRelpath('projects/2026/tasks.txt'), ['projects', '2026']);
+    assert.deepEqual(categoryPartsFromRelpath('a/b/c/note.md'), ['a', 'b', 'c']);
+    assert.deepEqual(categoryPartsFromRelpath(''), []);
+});
+
+test('invalid or hidden paths do not become categories', () => {
+    for (const path of [null, undefined, 5, '', '/absolute/note.md', 'C:/notes/note.md',
+        '../escape.md', './note.md', 'a/../note.md', 'a//note.md', 'a/',
+        '.hidden/note.md', 'a/.metadata.md', 'a/./note.md']) {
+        assert.equal(categoryFromRelpath(path), '', String(path));
+    }
+});
 
 test('parseExpires accepts date-only and datetime forms', () => {
     assert.equal(parseExpires('2026-11-20')?.getDate(), 20);
