@@ -2,19 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     dueStatus,
+    insertTaskLine,
+    isTaskLine,
     parseTodoLine,
     recurrenceNextLine,
+    removeTaskLine,
     shiftDate,
     sortTodoLines,
     sortTodoText,
     stripTodoGlyphs,
+    taskLineIndexAt,
     toDateString,
     toggleTodoDisplayLine,
     toggleTodoLine,
     todoBackspace,
     todoContinuation,
     todoEndOfLine,
+    todoGlyph,
     validDate,
+    validateTodoLine,
     withTodoGlyphs,
 } from '../extension/todo.js';
 
@@ -241,4 +247,67 @@ test('todoBackspace ignores lines with a description or no scaffold', () => {
 
 test('toDateString formats a local date as YYYY-MM-DD', () => {
     assert.match(toDateString(), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test('validateTodoLine accepts well-formed todo.txt lines', () => {
+    assert.ok(validateTodoLine('Buy milk').ok);
+    assert.ok(validateTodoLine('(A) 2026-11-01 Call mom').ok);
+    assert.ok(validateTodoLine('x 2026-11-12 (A) 2026-11-01 Submit proposal').ok);
+    assert.ok(validateTodoLine('Review contract +legal +work @phone due:2026-12-01 est:2h').ok);
+    assert.equal(validateTodoLine('').ok, true);
+    assert.equal(validateTodoLine('   ').ok, true);
+});
+
+test('validateTodoLine rejects structurally invalid lines', () => {
+    // Malformed dates inside key:value tags are rejected; the parser absorbs a
+    // bare malformed date or a lone +/@ marker into the description instead.
+    assert.equal(validateTodoLine('due:2026-13-99 Task').ok, false);
+    assert.equal(validateTodoLine('t:2026-02-30 Task').ok, false);
+    assert.equal(validateTodoLine('rec:fortnightly Task').ok, false);
+    assert.ok(validateTodoLine('x 2026-13-99 Task').ok);
+    assert.ok(validateTodoLine('+ Task').ok);
+    assert.ok(validateTodoLine('@ Task').ok);
+    assert.ok(validateTodoLine('rec: Task').ok);
+});
+
+test('insertTaskLine scaffolds a dated task above, below or at an index', () => {
+    const text = withTodoGlyphs('(A) 2026-11-01 Call mom');
+    const glyph = todoGlyph(false);
+    const below = insertTaskLine(text, 1, {today: '2026-11-12'});
+    assert.equal(stripTodoGlyphs(below.text), '(A) 2026-11-01 Call mom\n2026-11-12');
+    assert.equal(below.text.split('\n')[1].startsWith(glyph), true);
+    const above = insertTaskLine(text, 0, {today: '2026-11-12', description: 'New task'});
+    assert.equal(stripTodoGlyphs(above.text), '2026-11-12 New task\n(A) 2026-11-01 Call mom');
+    const withPriority = insertTaskLine(text, 1, {today: '2026-11-12', priority: 'B'});
+    assert.equal(stripTodoGlyphs(withPriority.text), '(A) 2026-11-01 Call mom\n(B) 2026-11-12');
+    assert.equal(insertTaskLine(text, -1), null);
+});
+
+test('removeTaskLine drops only the target task line', () => {
+    const text = withTodoGlyphs('(A) 2026-11-01 One\n(B) 2026-11-02 Two');
+    const result = removeTaskLine(text, 1);
+    assert.equal(stripTodoGlyphs(result.text), '(A) 2026-11-01 One');
+    assert.equal(removeTaskLine(text, 0).text.split('\n').length, 1);
+    assert.equal(removeTaskLine(text, 99), null);
+    // A bare description is a valid todo.txt task, so it can be removed.
+    assert.equal(stripTodoGlyphs(removeTaskLine('plain note', 0).text), '');
+    assert.equal(removeTaskLine('not a glyph line', 99), null);
+});
+
+test('taskLineIndexAt finds the task holding the caret', () => {
+    const text = withTodoGlyphs('(A) 2026-11-01 One\n(B) 2026-11-02 Two');
+    assert.equal(taskLineIndexAt(text, 0), 0);
+    assert.equal(taskLineIndexAt(text, Array.from(text).length), 1);
+    // A bare description is a valid todo.txt task line.
+    assert.equal(taskLineIndexAt('plain note', 0), 0);
+    assert.equal(taskLineIndexAt('', 0), -1);
+});
+
+test('isTaskLine rejects malformed lines after structural validation', () => {
+    assert.ok(isTaskLine('Buy milk'));
+    assert.ok(isTaskLine('(A) 2026-11-01 Task'));
+    assert.equal(isTaskLine('due:2026-13-99 Task'), false);
+    assert.equal(isTaskLine('rec:fortnightly Task'), false);
+    assert.equal(isTaskLine('t:2026-02-30 Task'), false);
+    assert.equal(isTaskLine(''), false);
 });

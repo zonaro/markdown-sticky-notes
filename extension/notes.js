@@ -7,6 +7,7 @@ import GdkPixbuf from 'gi://GdkPixbuf';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
+const Cairo = imports.cairo;
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -75,11 +76,14 @@ import {
 import {renderPlainText, renderSafeHtml} from './safe-preview.js';
 import {
     displayLine,
+    insertTaskLine,
     parseTodoLine,
     recurrenceNextLine,
+    removeTaskLine,
     sortTodoText,
     splitDisplayLine,
     stripTodoGlyphs,
+    taskLineIndexAt,
     toDateString,
     toggleTodoDisplayLine,
     todoBackspace,
@@ -95,6 +99,8 @@ const HANDLE = 18;
 // Note header (grip) height and the close-button hit area.
 const HEADER_H = 24;
 const CLOSE_SIZE = 18;
+// Notebook spiral strip width on the left edge of the TODO note.
+const SPIRAL_W = 14;
 // Extra pixels around a checkbox glyph that still count as a hit.
 const BOX_SLOP = 3;
 const MOVE_KEYS = new Set([
@@ -397,6 +403,11 @@ export class NotesController {
         const encoded = JSON.stringify(layout);
         if (encoded !== this._settings.get_string('todo-layout'))
             this._settings.set_string('todo-layout', encoded);
+    }
+    _clearTodoLayout() {
+        // Closing the TODO note removes its layout from GSettings so the note
+        // does not come back when the file is recreated or rescanned.
+        this._settings.set_string('todo-layout', '');
     }
     // Create the file when missing, then show/focus the note. Bound to the
     // panel menu entry.
@@ -729,10 +740,21 @@ export class NotesController {
     // Delete removes the note's source file and its owned sidecar, then drops
     // the view. The close button in the note header uses this same path.
     _delete(view) {
-        // The TODO note is never deleted by the extension: the file may be
-        // shared with other todo.txt tools. Deleting the file removes the note.
-        if ((view.note.kind ?? 'note') !== 'note')
+        const kind = view.note.kind ?? 'note';
+        if (kind === 'todo') {
+            // The TODO file is a raw single-file note. Delete it through the
+            // raw instance so the path is never resolved through the notes
+            // directory, then drop the view and clear the layout so the note
+            // does not come back on the next scan.
+            if (!this._todoFiles?.remove(view.note.filename))
+                return;
+            this._clearTodoLayout();
+            const index = this._store.notes.indexOf(view.note);
+            if (index >= 0)
+                this._store.notes.splice(index, 1);
+            this._drop(view);
             return;
+        }
         if (!this._files.remove(view.note.filename))
             return;
         const index = this._store.notes.indexOf(view.note);
@@ -801,10 +823,21 @@ export class NotesController {
         });
         const card = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
-            style_class: `sticky-note ${isImage ? 'image-sticker' : PALETTE[note.color]}`,
+            style_class: `sticky-note ${isImage ? 'image-sticker' : PALETTE[note.color]}${note.kind === 'todo' ? ' todo-note' : ''}`,
             x_expand: true,
             y_expand: true,
         });
+        // Notebook sheet: a narrow spiral strip on the left edge of the content
+        // area, drawn with cairo so it stays legible at any zoom and never
+        // touches GTK. It is added to the page box so the header can stay
+        // plain and the text insets around it.
+        let spiral = null;
+        if (note.kind === 'todo') {
+            spiral = new St.DrawingArea();
+            spiral.add_style_class_name('sticky-note-spiral');
+            spiral.set_size(SPIRAL_W, 0);
+            spiral.connect('paint', actor => this._paintSpiral(actor));
+        }
         const grip = new St.Widget({
             layout_manager: new Clutter.FixedLayout(),
             style_class: 'sticky-note-grip',
@@ -814,9 +847,10 @@ export class NotesController {
             x_expand: true,
         });
         // Close button: closing deletes the note. Its side follows the
-        // desktop's window-button layout.
+        // desktop's window-button layout. The TODO note is closable too: it
+        // deletes the configured todo.txt file, like any other note.
         let closeButton = null;
-        if ((note.kind ?? 'note') === 'note') {
+        if (note.kind === 'todo' || (note.kind ?? 'note') === 'note') {
             closeButton = new St.Button({
                 style_class: 'sticky-note-close',
                 can_focus: false,
@@ -887,11 +921,19 @@ export class NotesController {
         // ScrollView.child must implement St.Scrollable. Clutter.Text does not;
         // St.BoxLayout does, and it holds the text.
         const page = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            x_expand: true,
+            y_expand: true,
+        });
+        if (spiral)
+            page.add_child(spiral);
+        const textWrap = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
-        page.add_child(text);
+        textWrap.add_child(text);
+        page.add_child(textWrap);
         const preview = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             style_class: 'sticky-note-preview',
@@ -934,7 +976,7 @@ export class NotesController {
 
         const view = {
             note, frame, card, grip, pill, expiryBadge, text, preview, resize, scroll, editClick,
-            categoryPill, categoryPills, closeButton,
+            categoryPill, categoryPills, closeButton, spiral,
             previewMode: startsInPreview,
             previewOnly: isImage,
             editing: false,
@@ -1300,10 +1342,17 @@ export class NotesController {
 
         this._layoutHeader(view);
 
-        text.width = Math.max(48, note.w - 26);
+        // The notebook spiral sits on the left of the content area and pushes
+        // the text/preview insets right by its own width.
+        const spiral = view.spiral;
+        const leftPad = spiral ? SPIRAL_W + 4 : 0;
+        if (spiral)
+            spiral.set_size(SPIRAL_W, Math.max(0, note.h - HEADER_H));
+        text.width = Math.max(48, note.w - 26 - leftPad);
+        text.margin_left = 12 + leftPad;
         view.preview.width = isImageNoteFormat(note.format)
             ? Math.max(48, note.w)
-            : Math.max(48, note.w - 26);
+            : Math.max(48, note.w - 26 - leftPad);
         text.min_height = 0;
         resize.set_position(
             Math.max(0, note.w - view.handleSize), Math.max(0, note.h - view.handleSize));
@@ -1440,9 +1489,37 @@ export class NotesController {
             : (dark ? 'background-color: rgba(246,245,244,0.25);' : '');
         view.grip.set_height(HEADER_H);
         view.pill.set_width(36);
+        // The spiral strip uses the same ink as the note text.
+        if (view.spiral)
+            view.spiral.style = `color: ${ink};`;
         this._updateExpiryBadge(view);
         this._showAttrs(view);
         this._syncRibbon(view);
+    }
+
+    // Draw the notebook spiral rings on the left edge of the TODO note.
+    // Cairo keeps the rings legible at any zoom and needs no GTK widgets.
+    _paintSpiral(actor) {
+        const [w, h] = actor.get_size();
+        const cr = actor.get_context();
+        cr.set_source_rgba(0, 0, 0, 0);
+        cr.set_operator(Cairo.Operator.CLEAR);
+        cr.paint();
+        cr.set_operator(Cairo.Operator.OVER);
+        cr.set_source_rgba(0.18, 0.16, 0.18, 0.9);
+        const margin = 4;
+        const cx = w / 2;
+        const top = margin;
+        const bottom = Math.max(top, h - margin);
+        const radius = Math.min(6, Math.max(3, (w - 2) / 2));
+        const step = Math.max(8, radius * 2 + 4);
+        let y = top + radius;
+        while (y <= bottom - radius) {
+            cr.arc(cx, y, radius, 0, 2 * Math.PI);
+            cr.fill();
+            y += step;
+        }
+        cr.dispose();
     }
 
     _updateExpiryBadge(view) {
@@ -2549,6 +2626,33 @@ export class NotesController {
         if (sorted === raw)
             return;
         this._commitText(view, withTodoGlyphs(sorted), 0);
+    }
+    // Insert a new task line relative to the current line: -1 inserts above
+    // the line holding the caret/selection, 1 inserts below it. When no task
+    // line is under the caret, the new task is appended at the end.
+    _insertTodoLine(view, direction) {
+        const text = view.note.text;
+        const cursor = this._clampIndex(view, view.text.cursor_position);
+        const current = taskLineIndexAt(text, cursor);
+        const index = current < 0 ? text.split('\n').length
+            : direction < 0 ? current : current + 1;
+        const result = insertTaskLine(text, index, {today: toDateString(new Date())});
+        if (!result)
+            return;
+        this._commitText(view, result.text, result.cursor);
+    }
+    // Remove the task line holding the caret/selection. Non-task lines and
+    // lines without a task are left untouched.
+    _removeTodoLine(view) {
+        const text = view.note.text;
+        const cursor = this._clampIndex(view, view.text.cursor_position);
+        const index = taskLineIndexAt(text, cursor);
+        if (index < 0)
+            return;
+        const result = removeTaskLine(text, index);
+        if (!result)
+            return;
+        this._commitText(view, result.text, result.cursor);
     }
     _refreshPreview(view) {
         console.log(`Sticky Notes: _refreshPreview for ${view.note.filename}, previewMode=${view.previewMode}, token will be ${view.renderToken + 1}`);
@@ -3677,7 +3781,17 @@ export class NotesController {
                 })
                 : null,
         );
-        // Row 3: zoom out, zoom level, zoom in, delete
+        // Row 3: TODO task actions (insert/remove a task line).
+        if (isTodo)
+            addRow(
+                this._mkMenuButton('go-up-symbolic', t('Insert task above'),
+                    () => run(() => this._insertTodoLine(view, -1))),
+                this._mkMenuButton('go-down-symbolic', t('Insert task below'),
+                    () => run(() => this._insertTodoLine(view, 1))),
+                this._mkMenuButton('edit-delete-symbolic', t('Remove task'),
+                    () => run(() => this._removeTodoLine(view))),
+            );
+        // Row 4: zoom out, zoom level, zoom in, delete
         const zoomLabel = isImage ? null : new St.Label({
             text: `${view.note.zoom ?? 100}%`,
             style_class: 'sticky-menu-zoom-label',
@@ -3701,7 +3815,7 @@ export class NotesController {
                         expiryRow.visible = false;
                 }
             }),
-            this._mkMenuButton('edit-delete-symbolic', t('Delete'), () => run(() => this._delete(view)), !isTodo),
+            this._mkMenuButton('edit-delete-symbolic', t('Delete'), () => run(() => this._delete(view))),
         );
         menu.box.add_child(grid);
         if (expiryRow)
