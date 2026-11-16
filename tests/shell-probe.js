@@ -174,8 +174,8 @@ export default class NotesAcceptance extends Extension {
         this._check(long.categoryPill.accessible_name === '(Long category with accents ações) / (Another long folder)',
             'long category retains its full accessible name');
         log('CHECK 4b: close button and header height');
-        this._check(!!nested.closeButton && !todo.closeButton,
-            'regular notes have a close button; TODO does not');
+        this._check(!!nested.closeButton && !!todo.closeButton,
+            'regular notes and the TODO note both have a close button');
         this._check(nested.grip.height === 24, 'header height increased to 24');
         const closeOnRight = nested.closeButton.x > nested.note.w / 2;
         this._check(closeOnRight === !notes._closeOnLeft,

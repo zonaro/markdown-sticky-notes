@@ -418,3 +418,21 @@
     color: rgba(50, 47, 56, 0.6);
     padding: 0 2px;
 }
+
+/* Notebook sheet: the TODO note is drawn like a page torn from a spiral
+   notebook. The spiral strip sits on the left of the content area, drawn by
+   cairo, and the paper tone is a warm off-white so it reads differently from
+   the pastel notes. */
+.sticky-note.todo-note {
+    background-color: #fbf8f0;
+    border-color: rgba(120, 98, 72, 0.45);
+}
+.sticky-note.todo-note .sticky-note-grip {
+    background-color: rgba(120, 98, 72, 0.12);
+}
+.sticky-note.todo-note.pinned {
+    border-color: rgba(120, 98, 72, 0.7);
+}
+.sticky-note-spiral {
+    background-color: #fbf8f0;
+}

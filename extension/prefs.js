@@ -59,7 +59,7 @@ export default class StickyNotesPreferences extends ExtensionPreferences {
         }));
         todo.add(new Adw.ActionRow({
             title: t('Delete all notes keeps the TODO note'),
-            subtitle: t('Remove the todo.txt file itself to close the note.'),
+            subtitle: t('Close the TODO note from its own menu to delete the file; Delete all notes leaves it untouched.'),
         }));
         page.add(todo);
 

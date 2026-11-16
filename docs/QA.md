@@ -54,7 +54,9 @@
 - [ ] **Sort tasks** (right-click menu) orders active tasks by priority then creation date; completed tasks move to the end; blank lines keep their position; the file remains valid todo.txt.
 - [ ] Restart the session; the TODO note's position, size, color, font size, pin/lock and workspace survive via GSettings (`todo-layout`); `~/todo.txt` never gains a frontmatter header.
 - [ ] Set `todo-file` to empty in Preferences: the TODO note disappears; set a custom path: it appears there (with `~` resolving to the home directory); clearing the setting again removes the note without touching the file.
-- [ ] Delete `~/todo.txt` externally: the note disappears; **TODO note** in the top-bar menu recreates an empty file and reopens the note; the note cannot be deleted or duplicated from inside the extension; **Delete all notes** leaves it untouched.
+- [ ] Delete `~/todo.txt` externally: the note disappears; **TODO note** in the top-bar menu recreates an empty file and reopens the note; the note can be closed from its own menu (close button or **Delete**), which removes the file permanently; **Delete all notes** leaves it untouched.
+- [ ] **Insert task above**, **Insert task below** and **Remove task** appear in the TODO note menu. Each inserts/removes one line, scaffolding a dated task with today's creation date; the new line is always a valid todo.txt task.
+- [ ] A bare description like `Buy milk` is a valid task; malformed dates, empty `+`/`@` markers and unknown `rec:` values are not treated as tasks and cannot be toggled or sorted.
 - [ ] Check the file with `todo.sh ls` / `todo.sh do` if installed: output matches expectations; no ☐/☑ glyph characters ever appear in the file.
 
 ## Preview, links, images and diagrams

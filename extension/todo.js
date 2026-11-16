@@ -118,7 +118,116 @@ export function parseTodoLine(line) {
 }
 
 export function isTaskLine(line) {
-    return parseTodoLine(line) !== null;
+    const parsed = parseTodoLine(line);
+    if (!parsed)
+        return false;
+    // A line is only a task when it is structurally well-formed todo.txt.
+    // Malformed prefixes, dates and tags are rejected so they are never
+    // toggled, sorted or scaffolded as tasks.
+    return validateTodoLine(line).ok;
+}
+
+// Structural validation of one raw todo.txt line. A line is a valid task when
+// its leading prefix is structurally well-formed: priority must be a single
+// (A)-(Z) pair, every date must be a real calendar date, and every project,
+// context and key:value tag must be non-empty. A bare description is always
+// valid — priority is optional in the todo.txt format.
+export function validateTodoLine(line) {
+    const parsed = parseTodoLine(line);
+    if (!parsed)
+        return {ok: true, line: null};
+    const errors = [];
+    if (parsed.priority && !/^[A-Z]$/.test(parsed.priority))
+        errors.push('priority must be a single letter A-Z');
+    if (parsed.completionDate && !validDate(parsed.completionDate))
+        errors.push('invalid completion date');
+    if (parsed.creationDate && !validDate(parsed.creationDate))
+        errors.push('invalid creation date');
+    for (const project of parsed.projects) {
+        if (!project)
+            errors.push('empty project token');
+    }
+    for (const context of parsed.contexts) {
+        if (!context)
+            errors.push('empty context token');
+    }
+    for (const [key, value] of Object.entries(parsed.tags)) {
+        if (!key || !value)
+            errors.push(`empty tag ${key || 'value'}`);
+        else if (key === 'due' || key === 't') {
+            if (!validDate(value))
+                errors.push(`invalid date in tag ${key}`);
+        } else if (key === 'rec' && !RECURRENCE[value])
+            errors.push(`unknown recurrence ${value}`);
+    }
+    return errors.length ? {ok: false, line: parsed.raw, errors} : {ok: true, line: parsed.raw};
+}
+
+// Validate every line of a raw todo.txt text. Blank lines are always ok.
+export function validateTodoText(text) {
+    const lines = text.split('\n');
+    const problems = [];
+    for (let i = 0; i < lines.length; i++) {
+        const result = validateTodoLine(lines[i]);
+        if (!result.ok)
+            problems.push({index: i, ...result});
+    }
+    return problems;
+}
+
+// Insert a new task line at the given line index, scaffolding it with today's
+// creation date and an unchecked glyph. Returns the new display text and the
+// caret position just after the inserted line, or null when the index is out
+// of range. The inserted line is always a structurally valid task.
+export function insertTaskLine(text, index, {today = toDateString(new Date()),
+    priority = null, description = ''} = {}) {
+    const lines = text.split('\n');
+    if (index < 0 || index > lines.length)
+        return null;
+    const prefix = priority ? `(${priority}) ` : '';
+    const raw = `${prefix}${today} ${description}`.trim();
+    const display = displayLine(raw, false);
+    lines.splice(index, 0, display);
+    let cursor = 0;
+    for (let i = 0; i < index; i++)
+        cursor += Array.from(lines[i]).length + 1;
+    cursor += Array.from(display).length + 1;
+    return {text: lines.join('\n'), cursor};
+}
+
+// Remove one task line at the given index. Returns the new display text and the
+// caret position at the start of the removed slot, or null when the index is
+// out of range or the line is not a task.
+export function removeTaskLine(text, index) {
+    const lines = text.split('\n');
+    if (index < 0 || index >= lines.length)
+        return null;
+    const {raw} = splitDisplayLine(lines[index]);
+    if (!parseTodoLine(raw))
+        return null;
+    lines.splice(index, 1);
+    let cursor = 0;
+    for (let i = 0; i < index; i++)
+        cursor += Array.from(lines[i]).length + 1;
+    return {text: lines.join('\n'), cursor};
+}
+
+// Line index of the task whose glyph/first character sits at the given
+// character offset in the display text, or -1 when the offset is not inside a
+// task line.
+export function taskLineIndexAt(text, offset) {
+    let index = 0;
+    let seen = 0;
+    for (const line of text.split('\n')) {
+        const length = Array.from(line).length;
+        if (seen <= offset && offset <= seen + length) {
+            const {raw} = splitDisplayLine(line);
+            return parseTodoLine(raw) ? index : -1;
+        }
+        seen += length + 1;
+        index += 1;
+    }
+    return -1;
 }
 
 // Toggle completion on a raw line: prefix `x <today>` or strip the x prefix.
